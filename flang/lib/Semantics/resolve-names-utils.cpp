@@ -384,7 +384,6 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::ArraySpec &x) {
   }
   common::visit(common::visitors{
                     [&](const parser::AssumedSizeSpec &y) {
-                      printf("in ArraySpec, called lambda for AssumedSizeSpec &y\n");
                       Analyze(
                           std::get<std::list<parser::ExplicitShapeSpec>>(y.t));
                       Analyze(std::get<parser::AssumedImpliedSpec>(y.t));
