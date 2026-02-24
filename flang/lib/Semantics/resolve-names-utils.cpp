@@ -231,7 +231,6 @@ private:
   ArraySpec arraySpec_;
 
   template <typename T> void Analyze(const std::list<T> &list) {
-    printf("Calling Analyze for each item in list\n");
     for (const auto &elem : list) {
       Analyze(elem);
     }
@@ -585,7 +584,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeSpec &x) {
   arraySpec_.push_back(ShapeSpec::MakeAssumedShape(GetBound(x.v)));
 }
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeSpec &x) {
-  printf("called ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeSpec &x)\n");
   MakeExplicit(std::get<std::optional<parser::SpecificationExpr>>(x.t),
       std::get<parser::SpecificationExpr>(x.t));
 }
@@ -693,6 +691,7 @@ bool ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
 
   return true;
 }
+
 
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
   if (!checkExplicitShapeBoundsSpec(x)) {
