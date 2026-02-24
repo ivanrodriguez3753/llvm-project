@@ -650,6 +650,14 @@ bool ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
         ubExpr->Rank());
     rankError_ = true;
   }
+  if(ubRank > 1) {
+    parser::CharBlock at{parser::FindSourceLocation(upperBound)};
+    context_.Say(at,
+      "Integer array used as upper bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US, ubRank);
+    arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
+    rankError_ = true;
+  }
+
 
   int lbSize{0};
   if (lowerBoundOpt) {
