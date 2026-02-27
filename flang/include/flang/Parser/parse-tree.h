@@ -1940,10 +1940,10 @@ struct AllocateCoarraySpec {
 
 // R933 allocation ->
 //        allocate-object [( allocate-shape-spec-list )]
+//        [lbracket allocate-coarray-spec rbracket] |
+//        allocate-object ( [ lower-bounds-expr : ] upper-bounds-expr )
+//        [ lbracket allocate-coarray-spec rbracket ]
 //        [lbracket allocate-coarray-spec rbracket]
-//      | allocate-object ( allocate-shape-spec-array )
-//        [lbracket allocate-coarray-spec rbracket]
-// allocate-shape-spec-array -> [ lower-bounds-expr : ] upper-bounds-expr
 struct AllocateShapeSpecArray {
   TUPLE_CLASS_BOILERPLATE(AllocateShapeSpecArray);
   std::tuple<
