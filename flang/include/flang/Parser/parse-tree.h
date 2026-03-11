@@ -1324,13 +1324,24 @@ WRAPPER_CLASS(ImpliedShapeSpec, std::list<AssumedImpliedSpec>);
 EMPTY_CLASS(AssumedRankSpec);
 
 // R815 array-spec ->
-//        explicit-shape-spec-list | assumed-shape-spec-list |
-//        deferred-shape-spec-list | assumed-size-spec | implied-shape-spec |
+//        explicit-shape-spec-list | explicit-shape-bounds-spec |
+//        assumed-shape-spec-list | deferred-shape-spec-list |
+//        assumed-size-spec | implied-shape-spec |
 //        implied-shape-or-assumed-size-spec | assumed-rank-spec
+
+using ExplicitBoundsExpr = IntExpr;
+
+struct ExplicitShapeBoundsSpec {
+  TUPLE_CLASS_BOILERPLATE(ExplicitShapeBoundsSpec);
+  std::tuple<std::optional<ExplicitBoundsExpr>, ExplicitBoundsExpr>
+  t;
+};
+
 struct ArraySpec {
   UNION_CLASS_BOILERPLATE(ArraySpec);
-  std::variant<std::list<ExplicitShapeSpec>, std::list<AssumedShapeSpec>,
-      DeferredShapeSpecList, AssumedSizeSpec, ImpliedShapeSpec, AssumedRankSpec>
+  std::variant<std::list<ExplicitShapeSpec>, ExplicitShapeBoundsSpec, 
+      std::list<AssumedShapeSpec>, DeferredShapeSpecList, 
+      AssumedSizeSpec, ImpliedShapeSpec, AssumedRankSpec>
       u;
 };
 
