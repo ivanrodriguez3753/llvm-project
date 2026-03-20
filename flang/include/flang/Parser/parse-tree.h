@@ -1325,8 +1325,8 @@ EMPTY_CLASS(AssumedRankSpec);
 
 // R815 array-spec ->
 //        explicit-shape-spec-list | explicit-shape-bounds-spec |
-//        assumed-shape-spec-list | deferred-shape-spec-list |
-//        assumed-size-spec | implied-shape-spec |
+//        assumed-shape-spec-list | assumed-shape-bounds-spec | 
+//        deferred-shape-spec-list | assumed-size-spec | implied-shape-spec |
 //        implied-shape-or-assumed-size-spec | assumed-rank-spec
 
 using ExplicitBoundsExpr = IntExpr;
@@ -1337,10 +1337,12 @@ struct ExplicitShapeBoundsSpec {
   t;
 };
 
+WRAPPER_CLASS(AssumedShapeBoundsSpec, ExplicitBoundsExpr);
+
 struct ArraySpec {
   UNION_CLASS_BOILERPLATE(ArraySpec);
   std::variant<std::list<ExplicitShapeSpec>, ExplicitShapeBoundsSpec, 
-      std::list<AssumedShapeSpec>, DeferredShapeSpecList, 
+      std::list<AssumedShapeSpec>, AssumedShapeBoundsSpec, DeferredShapeSpecList, 
       AssumedSizeSpec, ImpliedShapeSpec, AssumedRankSpec>
       u;
 };

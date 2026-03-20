@@ -202,6 +202,7 @@ private:
     }
   }
   void Analyze(const parser::AssumedShapeSpec &);
+  void Analyze(const parser::AssumedShapeBoundsSpec &);
   void Analyze(const parser::ExplicitShapeSpec &);
   void Analyze(const parser::ExplicitShapeBoundsSpec &);
   void Analyze(const parser::AssumedImpliedSpec &);
@@ -336,6 +337,10 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::CoarraySpec &x) {
       x.u);
   CHECK(!arraySpec_.empty());
   return arraySpec_;
+}
+
+void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
+  ;
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeSpec &x) {

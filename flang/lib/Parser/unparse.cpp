@@ -573,6 +573,7 @@ public:
             [&](const std::list<ExplicitShapeSpec> &y) { Walk(y, ","); },
             [&](const ExplicitShapeBoundsSpec &y) { },
             [&](const std::list<AssumedShapeSpec> &y) { Walk(y, ","); },
+            [&](const AssumedShapeBoundsSpec &y) { },
             [&](const DeferredShapeSpecList &y) { Walk(y); },
             [&](const AssumedSizeSpec &y) { Walk(y); },
             [&](const ImpliedShapeSpec &y) { Walk(y); },
