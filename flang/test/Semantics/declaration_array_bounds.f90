@@ -1,4 +1,15 @@
-! RUN: %python %S/test_errors.py %s %flang_fc1
+! RUN: %python %S/test_errors.py %s %flang_fc1 -Wautomatic-in-main-program -Wsaved-local-in-spec-expr
+! An explicit-shape-spec or explicit-shape-bounds-spec whose bounds are not constant expressions
+! shall appear only in a subprogram, derived type definition, BLOCK construct, or interface body.
+module data 
+  integer :: rank1_array_module(3) = [5, 5, 5]
+  !ERROR: Automatic data object 'gg2' may not appear in a module
+  integer :: gg2(rank1_array_module)
+  integer, allocatable :: nonconstsize(:)
+  !ERROR: Rank-1 integer array used as lower bounds in DECLARATION must have constant size
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: gg3(nonconstsize : nonconstsize)
+end module 
 program declaration_array_bounds
   implicit none
 
@@ -12,7 +23,7 @@ program declaration_array_bounds
   integer :: c([3, 4, 5])
 
   ! Array lower and upper bounds, same size
-  integer :: d([2, 3] : [10, 20])
+  integer :: d((/2, 3/) : [10, 20])
 
   ! Scalar lower, array upper
   integer :: e(2 : [10, 20])
@@ -26,14 +37,16 @@ program declaration_array_bounds
   integer :: ggg(rank1_parameter_array * 2 : rank1_parameter_array - 1)
 
 
-  ! ! Negative cases (erros expected)
+  ! Negative cases (erros expected)
   integer :: rank1_array(3) = [5,5,5]
-  !ERROR: Array (upper) bound must be a constant expression
+  ! Use existing error message for constness checking
+  !PORTABILITY: specification expression refers to local object 'rank1_array' (initialized and saved) [-Wsaved-local-in-spec-expr]
+  !PORTABILITY: Automatic data object 'gg' should not appear in the specification part of a main program [-Wautomatic-in-main-program]
   integer :: gg(rank1_array)
   integer :: scalar
-  !ERROR: Array (lower) bound must be a constant expression
-  !ERROR: Array (upper) bound must be a constant expression
-  integer :: gggg(rank1_parameter_array + rank1_array : rank1_parameter_array * scalar)
+  !ERROR: Invalid specification expression: reference to local entity 'scalar'
+  !PORTABILITY: Automatic data object 'gggg' should not appear in the specification part of a main program [-Wautomatic-in-main-program]
+  integer :: gggg(rank1_parameter_array : scalar)
 
   !ERROR: Must have INTEGER type, but is REAL(4)
   integer :: h([1.2,2.2,3.2]:[1,2,3])
@@ -48,7 +61,6 @@ program declaration_array_bounds
   ! and nonconst
   integer :: rank3_array(2,2,2)
   !ERROR: Integer array used as lower bounds in DECLARATION must be rank-1 but is rank-2
-  !ERROR: Array (upper) bound must be a constant expression
   !ERROR: Integer array used as upper bounds in DECLARATION must be rank-1 but is rank-3
   integer :: k(rank2_parameter_array : rank3_array)
 
