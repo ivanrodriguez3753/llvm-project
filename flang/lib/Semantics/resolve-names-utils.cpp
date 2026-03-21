@@ -383,11 +383,6 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::CoarraySpec &x) {
   return arraySpec_;
 }
 
-// void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
-//   context_.Say("TODO Analyze AssumedShapeBoundsSpec"_err_en_US);
-//   arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
-// }
-
 void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
   MaybeExpr lbExpr{AnalyzeExpr(context_, x.v.thing)};
   if (!lbExpr) {
