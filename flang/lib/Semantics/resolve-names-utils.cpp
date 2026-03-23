@@ -249,6 +249,7 @@ private:
   Bound GetBound(const std::optional<parser::SpecificationExpr> &);
   Bound GetBound(const parser::SpecificationExpr &);
   bool checkExplicitShapeBoundsSpec(const parser::ExplicitShapeBoundsSpec &x);
+  bool checkAssumedShapeBoundsSpec(const parser::AssumedShapeBoundsSpec &x);
 };
 
 ArraySpec AnalyzeArraySpec(
@@ -418,21 +419,12 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::CoarraySpec &x) {
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
+  if(!checkAssumedShapeBoundsSpec(x)) {
+    arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
+    return;
+  }
+
   MaybeExpr lbExpr{AnalyzeExpr(context_, x.v.thing)};
-  if (!lbExpr) {
-    arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
-    return;
-  }
-
-  if (lbExpr->Rank() != 1) {
-    parser::CharBlock at{parser::FindSourceLocation(x)};
-    context_.Say(at,
-        "Integer array used as lower bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US,
-        lbExpr->Rank());
-    arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
-    return;
-  }
-
   auto extractValues =
       [&](const SomeExpr &folded) -> std::vector<std::int64_t> {
     std::vector<std::int64_t> values;
@@ -464,19 +456,12 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
       auto nFolded{
           nExpr ? evaluate::Fold(context_.foldingContext(), std::move(*nExpr))
                 : evaluate::ExtentExpr{0}};
-      auto n{evaluate::ToInt64(nFolded)};
-      if (!n) {
-        context_.Say(parser::FindSourceLocation(x),
-            "Rank-1 integer array used as lower bounds in DECLARATION must have constant size"_err_en_US);
-        return bounds;
-      }
-      if (*n <= 0) {
-        return bounds;
-      }
+      auto n{*evaluate::ToInt64(nFolded)};
 
-      auto lb0{evaluate::GetRawLowerBound(context_.foldingContext(), *base, 0)};
-      bounds.reserve(static_cast<std::size_t>(*n));
-      for (std::int64_t k{0}; k < *n; ++k) {
+      bounds.reserve(static_cast<std::size_t>(n));
+      for (std::int64_t k{0}; k < n; ++k) {
+        auto lb0{
+            evaluate::GetRawLowerBound(context_.foldingContext(), *base, 0)};
         auto idx{evaluate::Fold(context_.foldingContext(),
             common::Clone(lb0) + evaluate::ExtentExpr{
                 static_cast<common::ConstantSubscript>(k)})};
@@ -484,15 +469,7 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
         subscripts.emplace_back(SubscriptIntExpr{std::move(idx)});
         auto elem{evaluate::AsGenericExpr(evaluate::DataRef{
             evaluate::ArrayRef{common::Clone(*base), std::move(subscripts)}})};
-        if (!elem) {
-          bounds.clear();
-          return bounds;
-        }
         const auto *intExpr{evaluate::UnwrapExpr<SomeIntExpr>(*elem)};
-        if (!intExpr) {
-          bounds.clear();
-          return bounds;
-        }
         auto subscript{evaluate::Fold(context_.foldingContext(),
             evaluate::ConvertToType<evaluate::SubscriptInteger>(
                 common::Clone(*intExpr)))};
@@ -504,7 +481,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
     // B) Non-constant rank-1 array constructor: [a,b,...]
     if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
       bool sawCtor{false};
-      bool ok{true};
       common::visit(
           [&](const auto &kindExpr) {
             using K = std::decay_t<decltype(kindExpr)>;
@@ -515,10 +491,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
               sawCtor = true;
               for (const auto &value : *ctor) {
                 const auto *elem{std::get_if<evaluate::Expr<R>>(&value.u)};
-                if (!elem || elem->Rank() != 0) {
-                  ok = false;
-                  return;
-                }
                 SomeIntExpr one{common::Clone(*elem)};
                 auto sub{evaluate::Fold(context_.foldingContext(),
                     evaluate::ConvertToType<evaluate::SubscriptInteger>(
@@ -530,9 +502,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
           },
           someInt->u);
       if (sawCtor) {
-        if (!ok) {
-          bounds.clear();
-        }
         return bounds;
       }
     }
@@ -554,15 +523,7 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
     auto nFolded{
         nExpr ? evaluate::Fold(context_.foldingContext(), std::move(*nExpr))
               : evaluate::ExtentExpr{0}};
-    auto n{evaluate::ToInt64(nFolded)};
-    if (!n) {
-      context_.Say(parser::FindSourceLocation(x),
-          "Rank-1 integer array used as lower bounds in DECLARATION must have constant size"_err_en_US);
-      return bounds;
-    }
-    if (*n <= 0) {
-      return bounds;
-    }
+    auto n{*evaluate::ToInt64(nFolded)};
 
     std::vector<const Symbol *> rankOneSymbols;
     for (const semantics::SymbolRef ref : evaluate::CollectSymbols(folded)) {
@@ -572,17 +533,10 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
         rankOneSymbols.push_back(&symbol);
       }
     }
-    if (rankOneSymbols.empty()) {
-      return bounds;
-    }
 
     const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
-    if (!someInt) {
-      return bounds;
-    }
-
-    bounds.reserve(static_cast<std::size_t>(*n));
-    for (std::int64_t k{0}; k < *n; ++k) {
+    bounds.reserve(static_cast<std::size_t>(n));
+    for (std::int64_t k{0}; k < n; ++k) {
       std::vector<std::pair<const Symbol *, SubscriptIntExpr>>
           elementSubscripts;
       elementSubscripts.reserve(rankOneSymbols.size());
@@ -599,16 +553,11 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
 
       RankOneArrayElementSubstituter rewriter{elementSubscripts};
       std::optional<Bound> elementBound;
-      bool ok{true};
 
       common::visit(
           [&](const auto &kindExpr) {
             auto scalarized{
                 evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
-            if (scalarized.Rank() != 0) {
-              ok = false;
-              return;
-            }
             SomeIntExpr one{std::move(scalarized)};
             auto sub{evaluate::Fold(context_.foldingContext(),
                 evaluate::ConvertToType<evaluate::SubscriptInteger>(
@@ -618,10 +567,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
           },
           someInt->u);
 
-      if (!ok || !elementBound) {
-        bounds.clear();
-        return bounds;
-      }
       bounds.push_back(std::move(*elementBound));
     }
 
@@ -630,11 +575,6 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
 
   auto lbFolded{evaluate::Fold(context_.foldingContext(), std::move(*lbExpr))};
   std::vector<Bound> lbounds{collectBounds(lbFolded)};
-  if (lbounds.empty()) {
-    arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
-    return;
-  }
-
   for (auto &lb : lbounds) {
     arraySpec_.push_back(ShapeSpec::MakeAssumedShape(std::move(lb)));
   }
@@ -646,6 +586,38 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeSpec &x) {
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeSpec &x) {
   MakeExplicit(std::get<std::optional<parser::SpecificationExpr>>(x.t),
       std::get<parser::SpecificationExpr>(x.t));
+}
+
+bool ArraySpecAnalyzer::checkAssumedShapeBoundsSpec(
+    const parser::AssumedShapeBoundsSpec &x) {
+  MaybeExpr lbExpr{AnalyzeExpr(context_, x.v.thing)};
+  if (!lbExpr) {
+    return false;
+  }
+
+  bool rankError{false}, nonConstSizeError{false};
+
+  if (lbExpr->Rank() != 1) {
+    parser::CharBlock at{parser::FindSourceLocation(x)};
+    context_.Say(at,
+        "Integer array used as lower bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US,
+        lbExpr->Rank());
+    rankError = true;
+  }
+
+  auto shape{evaluate::GetShape(context_.foldingContext(), *lbExpr)};
+  auto sizeExpr{
+      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+  auto sizeFolded{
+      sizeExpr ? evaluate::Fold(context_.foldingContext(), std::move(*sizeExpr))
+               : evaluate::ExtentExpr{0}};
+  if (!evaluate::ToInt64(sizeFolded)) {
+    context_.Say(parser::FindSourceLocation(x),
+        "Rank-1 integer array used as lower bounds in DECLARATION must have constant size"_err_en_US);
+    nonConstSizeError = true;
+  }
+
+  return !(rankError || nonConstSizeError);
 }
 
 bool ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
