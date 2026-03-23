@@ -22,8 +22,42 @@
 #include "flang/Support/Fortran.h"
 #include <initializer_list>
 #include <variant>
+#include "flang/Evaluate/rewrite.h"
+#include "flang/Semantics/type.h"
 
 namespace Fortran::semantics {
+
+struct RankOneArrayElementSubstituter {
+  const std::vector<std::pair<const Symbol *, SubscriptIntExpr>> &subscripts;
+
+  template <typename T, typename U>
+  evaluate::Expr<T> operator()(evaluate::Expr<T> &&x, const U &) const {
+    return std::move(x);
+  }
+
+  template <typename T>
+  evaluate::Expr<T> operator()(
+      evaluate::Expr<T> &&x,
+      const evaluate::Designator<T> &designator) const {
+    if (designator.Rank() != 1) {
+      return std::move(x);
+    }
+    const Symbol *last{designator.GetLastSymbol()};
+    if (!last) {
+      return std::move(x);
+    }
+    for (const auto &[symbol, subscript] : subscripts) {
+      if (last == symbol) {
+        std::vector<evaluate::Subscript> scalarSubscripts;
+        scalarSubscripts.emplace_back(common::Clone(subscript));
+        evaluate::DataRef dataRef{
+            evaluate::ArrayRef{*symbol, std::move(scalarSubscripts)}};
+        return evaluate::Expr<T>{evaluate::Designator<T>{std::move(dataRef)}};
+      }
+    }
+    return std::move(x);
+  }
+};
 
 using common::LanguageFeature;
 using common::LogicalOperator;
@@ -399,7 +433,8 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
     return;
   }
 
-  auto extractValues = [&](const SomeExpr &folded) -> std::vector<std::int64_t> {
+  auto extractValues =
+      [&](const SomeExpr &folded) -> std::vector<std::int64_t> {
     std::vector<std::int64_t> values;
     if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
       common::visit(
@@ -408,9 +443,8 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
             if (const auto *constArray{
                     evaluate::UnwrapExpr<evaluate::Constant<typename T::Result>>(
                         kindExpr)}) {
-              for (auto it{constArray->values().begin()};
-                   it != constArray->values().end(); ++it) {
-                values.push_back(it->ToInt64());
+              for (const auto &value : constArray->values()) {
+                values.push_back(value.ToInt64());
               }
             }
           },
@@ -422,7 +456,7 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
   auto collectBounds = [&](const SomeExpr &folded) -> std::vector<Bound> {
     std::vector<Bound> bounds;
 
-    // A) Named rank-1 array expr -> build base(lb0+k)
+    // A) Bare named rank-1 array expr -> build base(lb0+k)
     if (auto base{evaluate::ExtractNamedEntity(folded)}) {
       auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
       auto nExpr{
@@ -476,7 +510,8 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
             using K = std::decay_t<decltype(kindExpr)>;
             using R = typename K::Result;
             if (const auto *ctor{
-                    evaluate::UnwrapExpr<evaluate::ArrayConstructor<R>>(kindExpr)}) {
+                    evaluate::UnwrapExpr<evaluate::ArrayConstructor<R>>(
+                        kindExpr)}) {
               sawCtor = true;
               for (const auto &value : *ctor) {
                 const auto *elem{std::get_if<evaluate::Expr<R>>(&value.u)};
@@ -488,7 +523,8 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
                 auto sub{evaluate::Fold(context_.foldingContext(),
                     evaluate::ConvertToType<evaluate::SubscriptInteger>(
                         std::move(one)))};
-                bounds.emplace_back(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+                bounds.emplace_back(
+                    Bound{MaybeSubscriptIntExpr{std::move(sub)}});
               }
             }
           },
@@ -503,10 +539,92 @@ void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
 
     // C) Constant rank-1 expression
     auto values{extractValues(folded)};
-    bounds.reserve(values.size());
-    for (auto value : values) {
-      bounds.emplace_back(static_cast<common::ConstantSubscript>(value));
+    if (!values.empty()) {
+      bounds.reserve(values.size());
+      for (auto value : values) {
+        bounds.emplace_back(static_cast<common::ConstantSubscript>(value));
+      }
+      return bounds;
     }
+
+    // D) General rank-1 elemental expression over rank-1 arrays: dim_a + 2
+    auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
+    auto nExpr{
+        shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+    auto nFolded{
+        nExpr ? evaluate::Fold(context_.foldingContext(), std::move(*nExpr))
+              : evaluate::ExtentExpr{0}};
+    auto n{evaluate::ToInt64(nFolded)};
+    if (!n) {
+      context_.Say(parser::FindSourceLocation(x),
+          "Rank-1 integer array used as lower bounds in DECLARATION must have constant size"_err_en_US);
+      return bounds;
+    }
+    if (*n <= 0) {
+      return bounds;
+    }
+
+    std::vector<const Symbol *> rankOneSymbols;
+    for (const semantics::SymbolRef ref : evaluate::CollectSymbols(folded)) {
+      const Symbol &symbol{ref.get()};
+      if (const ArraySpec *shape{symbol.GetShape()};
+          shape && shape->Rank() == 1) {
+        rankOneSymbols.push_back(&symbol);
+      }
+    }
+    if (rankOneSymbols.empty()) {
+      return bounds;
+    }
+
+    const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
+    if (!someInt) {
+      return bounds;
+    }
+
+    bounds.reserve(static_cast<std::size_t>(*n));
+    for (std::int64_t k{0}; k < *n; ++k) {
+      std::vector<std::pair<const Symbol *, SubscriptIntExpr>>
+          elementSubscripts;
+      elementSubscripts.reserve(rankOneSymbols.size());
+      for (const Symbol *symbol : rankOneSymbols) {
+        evaluate::NamedEntity base{*symbol};
+        auto lb0{
+            evaluate::GetRawLowerBound(context_.foldingContext(), base, 0)};
+        auto idx{evaluate::Fold(context_.foldingContext(),
+            common::Clone(lb0) + evaluate::ExtentExpr{
+                static_cast<common::ConstantSubscript>(k)})};
+        elementSubscripts.emplace_back(
+            symbol, SubscriptIntExpr{std::move(idx)});
+      }
+
+      RankOneArrayElementSubstituter rewriter{elementSubscripts};
+      std::optional<Bound> elementBound;
+      bool ok{true};
+
+      common::visit(
+          [&](const auto &kindExpr) {
+            auto scalarized{
+                evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+            if (scalarized.Rank() != 0) {
+              ok = false;
+              return;
+            }
+            SomeIntExpr one{std::move(scalarized)};
+            auto sub{evaluate::Fold(context_.foldingContext(),
+                evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                    std::move(one)))};
+            elementBound.emplace(
+                Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+          },
+          someInt->u);
+
+      if (!ok || !elementBound) {
+        bounds.clear();
+        return bounds;
+      }
+      bounds.push_back(std::move(*elementBound));
+    }
+
     return bounds;
   };
 
