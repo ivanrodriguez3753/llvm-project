@@ -650,10 +650,10 @@ bool ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
         ubExpr->Rank());
     rankError_ = true;
   }
-  if(ubRank > 1) {
+  if(ubExpr->Rank() > 1) {
     parser::CharBlock at{parser::FindSourceLocation(upperBound)};
     context_.Say(at,
-      "Integer array used as upper bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US, ubRank);
+      "Integer array used as upper bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US, ubExpr->Rank());
     arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
     rankError_ = true;
   }
