@@ -1926,7 +1926,7 @@ struct AllocateCoarraySpec {
 //        [lbracket allocate-coarray-spec rbracket] | 
 //        ( [ lower-bounds-expr : ] upper-bounds-expr )
 //        [ lbracket allocate-coarray-spec rbracket ]
-// The 2028 spec has a typo in the spec, as well as a deviation from the
+// The 2023 spec has a typo, as well as a deviation from the
 // similar explicit-shape-bounds-spec and assumed-shape-bounds-spec 
 // rules for array-spec. The typo is that it's missing an allocate-object
 // for the second rule. The deviation is that array-spec has rules 
