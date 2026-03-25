@@ -59,7 +59,7 @@ private:
 
   static int ShapeSpecRank(const parser::Allocation &allocation) {
     return static_cast<int>(
-        std::get<std::list<parser::AllocateShapeSpec>>(allocation.t).size());
+        std::get<std::list<parser::AllocateShapeSpec>>(std::get<parser::AllocateShapeSpecListOrBounds>(allocation.t).u).size());
   }
 
   static int CoarraySpecRank(const parser::Allocation &allocation) {
@@ -612,7 +612,7 @@ bool AllocationCheckerHelper::RunChecks(SemanticsContext &context) {
               static_cast<std::size_t>(allocateShapeSpecRank_)) {
         std::size_t j{0};
         for (const auto &shapeSpec :
-            std::get<std::list<parser::AllocateShapeSpec>>(allocation_.t)) {
+            std::get<std::list<parser::AllocateShapeSpec>>(std::get<parser::AllocateShapeSpecListOrBounds>(allocation_.t).u)) {
           if (j >= allocateInfo_.sourceExprShape->size()) {
             break;
           }

@@ -4373,6 +4373,11 @@ MaybeExpr ExpressionAnalyzer::Analyze(const parser::PointerObject &x) {
   return ExprOrVariable(x, parser::FindSourceLocation(x));
 }
 
+MaybeExpr ExpressionAnalyzer::Analyze(const parser::AllocateShapeSpecListOrBounds &x) {
+  return std::nullopt;
+}
+
+
 Expr<SubscriptInteger> ExpressionAnalyzer::AnalyzeKindSelector(
     TypeCategory category,
     const std::optional<parser::KindSelector> &selector) {
