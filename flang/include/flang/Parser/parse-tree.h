@@ -2033,6 +2033,7 @@ struct AssignmentStmt {
 
 // R1035 bounds-spec -> lower-bound-expr :
 WRAPPER_CLASS(BoundsSpec, BoundExpr);
+WRAPPER_CLASS(BoundsBoundsSpec, IntExpr);
 
 // R1036 bounds-remapping -> lower-bound-expr : upper-bound-expr
 struct BoundsRemapping {
@@ -2049,6 +2050,7 @@ struct BoundsRemappingBoundsSpec {
 
 // R1033 pointer-assignment-stmt ->
 //         data-pointer-object [( bounds-spec-list )] => data-target |
+//         data-pointer-object ( lower-bounds-expr : ) => data-target |
 //         data-pointer-object ( bounds-remapping-list ) => data-target |
 //         data-pointer-object ( lower-bounds-expr : upper-bounds-expr )
 //         proc-pointer-object => proc-target
@@ -2060,9 +2062,13 @@ struct PointerAssignmentStmt {
     UNION_CLASS_BOILERPLATE(BoundsRemappingListOrBounds);
     std::variant<std::list<BoundsRemapping>, BoundsRemappingBoundsSpec> u;
   };
+  struct BoundsSpecListOrBounds {
+    UNION_CLASS_BOILERPLATE(BoundsSpecListOrBounds);
+    std::variant<std::list<BoundsSpec>, BoundsBoundsSpec> u;
+  };
   struct Bounds {
     UNION_CLASS_BOILERPLATE(Bounds);
-    std::variant<BoundsRemappingListOrBounds, std::list<BoundsSpec>> u;
+    std::variant<BoundsRemappingListOrBounds, BoundsSpecListOrBounds> u;
   };
   TUPLE_CLASS_BOILERPLATE(PointerAssignmentStmt);
   mutable TypedAssignment typedAssignment;

@@ -198,6 +198,8 @@ public:
   NODE(parser, BoundsRemappingBoundsSpec)
   NODE(PointerAssignmentStmt, BoundsRemappingListOrBounds)
   NODE(parser, BoundsSpec)
+  NODE(parser, BoundsBoundsSpec)
+  NODE(PointerAssignmentStmt, BoundsSpecListOrBounds)
   NODE(parser, Call)
   NODE(parser, CallStmt)
   NODE(CallStmt, Chevrons)

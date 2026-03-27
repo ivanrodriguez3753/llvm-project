@@ -931,11 +931,8 @@ public:
       Walk(std::get<DataRef>(x.t));
       common::visit(
           common::visitors{
-              // [&](const std::list<BoundsRemapping> &y) {
-              //   Put('('), Walk(y), Put(')');
-              // },
               [&](const PointerAssignmentStmt::BoundsRemappingListOrBounds &y) { },
-              [&](const std::list<BoundsSpec> &y) { Walk("(", y, ", ", ")"); },
+              [&](const PointerAssignmentStmt::BoundsSpecListOrBounds &y) { }
           },
           std::get<PointerAssignmentStmt::Bounds>(x.t).u);
       Put(" => "), Walk(std::get<Expr>(x.t));
