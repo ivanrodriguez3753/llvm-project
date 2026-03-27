@@ -193,6 +193,8 @@ public:
   NODE(parser, BlockStmt)
   NODE(parser, BoundsRemapping)
   NODE(parser, BoundsSpec)
+  NODE(parser, BoundsBoundsSpec)
+  NODE(PointerAssignmentStmt, BoundsSpecListOrBounds)
   NODE(parser, Call)
   NODE(parser, CallStmt)
   NODE(CallStmt, Chevrons)

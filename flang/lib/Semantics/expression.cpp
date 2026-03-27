@@ -3658,7 +3658,8 @@ const Assignment *ExpressionAnalyzer::Analyze(
                 }
                 assignment.u = std::move(bounds);
               },
-              [&](const std::list<parser::BoundsSpec> &list) {
+              [&](const parser::PointerAssignmentStmt::BoundsSpecListOrBounds &listOrBounds) {
+                const auto &list{std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
                 Assignment::BoundsSpec bounds;
                 for (const auto &bound : list) {
                   if (auto lower{AsSubscript(Analyze(bound.v))}) {

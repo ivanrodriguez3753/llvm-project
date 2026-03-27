@@ -932,7 +932,8 @@ public:
               [&](const std::list<BoundsRemapping> &y) {
                 Put('('), Walk(y), Put(')');
               },
-              [&](const std::list<BoundsSpec> &y) { Walk("(", y, ", ", ")"); },
+              // [&](const std::list<BoundsSpec> &y) { Walk("(", y, ", ", ")"); },
+              [&](const PointerAssignmentStmt::BoundsSpecListOrBounds &y) { }
           },
           std::get<PointerAssignmentStmt::Bounds>(x.t).u);
       Put(" => "), Walk(std::get<Expr>(x.t));
