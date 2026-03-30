@@ -3630,6 +3630,40 @@ const Assignment *ExpressionAnalyzer::Analyze(const parser::AssignmentStmt &x) {
   return common::GetPtrFromOptional(x.typedAssignment->v);
 }
 
+static bool shouldRewriteBoundsSpecListToBounds(
+    semantics::SemanticsContext &context,
+    const parser::PointerAssignmentStmt::BoundsSpecListOrBounds &listOrBounds) {
+  const auto &boundsSpecList{
+      std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
+  if (boundsSpecList.size() != 1) {
+    return false;
+  }
+
+  const parser::BoundsSpec &boundsSpec{boundsSpecList.front()};
+  MaybeExpr analyzedExpr{
+      AnalyzeExpr(context, boundsSpec.v.thing.thing.value())};
+  return analyzedExpr && analyzedExpr->Rank() > 0;
+}
+
+static void rewriteBoundsSpecListToBounds(
+    const parser::PointerAssignmentStmt::BoundsSpecListOrBounds &listOrBounds) {
+  auto &mutableListOrBounds{
+      const_cast<parser::PointerAssignmentStmt::BoundsSpecListOrBounds &>(
+          listOrBounds)};
+  auto &boundsSpecList{
+      std::get<std::list<parser::BoundsSpec>>(mutableListOrBounds.u)};
+
+  auto &mutableBoundsSpec{boundsSpecList.front()};
+  parser::IntExpr lowerIntExpr{std::move(mutableBoundsSpec.v.thing)};
+  parser::BoundsBoundsSpec boundsSpec{std::move(lowerIntExpr)};
+  mutableListOrBounds.u = std::move(boundsSpec);
+}
+
+MaybeExpr ExpressionAnalyzer::Analyze(const parser::BoundsBoundsSpec &) {
+  printf("Called Analyze(const parser::BoundsBoundsSpec &)\n");
+  return std::nullopt;
+}
+
 const Assignment *ExpressionAnalyzer::Analyze(
     const parser::PointerAssignmentStmt &x) {
   if (!x.typedAssignment) {
@@ -3659,11 +3693,18 @@ const Assignment *ExpressionAnalyzer::Analyze(
                 assignment.u = std::move(bounds);
               },
               [&](const parser::PointerAssignmentStmt::BoundsSpecListOrBounds &listOrBounds) {
-                const auto &list{std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
                 Assignment::BoundsSpec bounds;
-                for (const auto &bound : list) {
-                  if (auto lower{AsSubscript(Analyze(bound.v))}) {
-                    bounds.emplace_back(Fold(std::move(*lower)));
+                if(shouldRewriteBoundsSpecListToBounds(context_, listOrBounds)) {
+                  rewriteBoundsSpecListToBounds(listOrBounds);
+                  const auto &boundsBounds{std::get<parser::BoundsBoundsSpec>(listOrBounds.u)};
+                  Analyze(boundsBounds);
+                }
+                else {
+                  const auto &list{std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
+                  for (const auto &bound : list) {
+                    if (auto lower{AsSubscript(Analyze(bound.v))}) {
+                      bounds.emplace_back(Fold(std::move(*lower)));
+                    }
                   }
                 }
                 assignment.u = std::move(bounds);
