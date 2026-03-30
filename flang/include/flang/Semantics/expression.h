@@ -320,6 +320,7 @@ private:
   MaybeExpr Analyze(const parser::Expr::NEQV &);
   MaybeExpr Analyze(const parser::Expr::DefinedBinary &);
   MaybeExpr Analyze(const parser::BoundsRemappingBoundsSpec &);
+  MaybeExpr Analyze(const parser::BoundsBoundsSpec &);
   template <typename A> MaybeExpr Analyze(const A &x) {
     return Analyze(x.u); // default case
   }
