@@ -1,6 +1,4 @@
 ! RUN: %python %S/test_errors.py %s %flang_fc1 -Wautomatic-in-main-program -Wsaved-local-in-spec-expr
-! An explicit-shape-spec or explicit-shape-bounds-spec whose bounds are not constant expressions
-! shall appear only in a subprogram, derived type definition, BLOCK construct, or interface body.
 module data 
   integer :: rank1_array_module(3) = [5, 5, 5]
   !future_ERROR: Automatic data object 'gg2' may not appear in a module
@@ -82,4 +80,4 @@ program declaration_array_bounds
   !ERROR: Must be a scalar value, but is a rank-1 array
   !ERROR: Must have INTEGER type, but is REAL(4)
   integer :: test_array([1,2,3] : [2,3,4], 3, [1,2,3], 5.2)
-end program 
+end program

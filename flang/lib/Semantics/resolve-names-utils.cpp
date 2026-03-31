@@ -279,13 +279,11 @@ static void rewriteShapeSpecListToExplicitBounds(const parser::ArraySpec &x) {
   auto &mutableUpperBound{std::get<1>(mutableExplicitShapeSpec.t)};
   parser::IntExpr upperIntExpr{std::move(mutableUpperBound.v.thing)};
 
-  auto &lowerBoundOpt{std::get<0>(mutableExplicitShapeSpec.t)};
+
+  auto &mutableLowerBound{std::get<0>(mutableExplicitShapeSpec.t)};
   std::optional<parser::IntExpr> lowerIntExpr;
-  if (lowerBoundOpt) {
-    auto &mutableLowerBound{std::get<0>(mutableExplicitShapeSpec.t)};
-    if(mutableLowerBound) {
-      lowerIntExpr = std::move(mutableLowerBound->v.thing);
-    }
+  if(mutableLowerBound) {
+    lowerIntExpr = std::move(mutableLowerBound->v.thing);
   }
   
   parser::ExplicitShapeBoundsSpec boundsSpec{
