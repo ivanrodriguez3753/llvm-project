@@ -25,6 +25,7 @@
 #include "flang/Semantics/semantics.h"
 #include "flang/Semantics/symbol.h"
 #include "flang/Semantics/tools.h"
+#include "flang/Semantics/type.h"
 #include "flang/Support/Fortran.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -3631,6 +3632,25 @@ const Assignment *ExpressionAnalyzer::Analyze(const parser::AssignmentStmt &x) {
   return common::GetPtrFromOptional(x.typedAssignment->v);
 }
 
+static std::optional<Expr<SubscriptInteger>> AsSubscriptForPointerBounds(
+    ExpressionAnalyzer &analyzer, MaybeExpr &&expr) {
+  if (expr) {
+    if (expr->Rank() > 1) {
+      analyzer.Say("Subscript expression has rank %d greater than 1"_err_en_US,
+          expr->Rank());
+    }
+    if (auto *intExpr{std::get_if<Expr<SomeInteger>>(&expr->u)}) {
+      if (auto *ssIntExpr{std::get_if<Expr<SubscriptInteger>>(&intExpr->u)}) {
+        return std::move(*ssIntExpr);
+      }
+      return Expr<SubscriptInteger>{
+          Convert<SubscriptInteger, TypeCategory::Integer>{std::move(*intExpr)}};
+    }
+    analyzer.Say("Subscript expression is not INTEGER"_err_en_US);
+  }
+  return std::nullopt;
+}
+
 static bool shouldRewriteBoundsSpecListToBounds(
     semantics::SemanticsContext &context,
     const parser::PointerAssignmentStmt::BoundsSpecListOrBounds &listOrBounds) {
@@ -3662,15 +3682,19 @@ static void rewriteBoundsSpecListToBounds(
 
 using Bound = Expr<SubscriptInteger>;
 using SubscriptIntExpr = Expr<SubscriptInteger>;
+using RankOneSubscript = std::pair<semantics::SymbolRef, SubscriptIntExpr>;
 
-struct RankOneArrayElementSubstituter : public evaluate::rewrite::Identity {
-  using evaluate::rewrite::Identity::operator();
-
-  const std::vector<std::pair<const Symbol *, SubscriptIntExpr>> &subscripts;
+struct RankOneArrayElementSubstituter {
+  const std::vector<RankOneSubscript> &subscripts;
 
   explicit RankOneArrayElementSubstituter(
-    const std::vector<std::pair<const Symbol *, SubscriptIntExpr>> &s)
-  : subscripts{s} {}
+      const std::vector<RankOneSubscript> &s)
+      : subscripts{s} {}
+
+  template <typename T, typename U>
+  evaluate::Expr<T> operator()(evaluate::Expr<T> &&x, const U &) const {
+    return std::move(x);
+  }
 
   template <typename T>
   evaluate::Expr<T> operator()(
@@ -3683,12 +3707,15 @@ struct RankOneArrayElementSubstituter : public evaluate::rewrite::Identity {
     if (!last) {
       return std::move(x);
     }
-    for (const auto &[symbol, subscript] : subscripts) {
-      if (last == symbol) {
+    const Symbol &lastUltimate{last->GetUltimate()};
+
+    for (const auto &[symbolRef, subscript] : subscripts) {
+      if (&symbolRef.get().GetUltimate() == &lastUltimate) {
         std::vector<evaluate::Subscript> scalarSubscripts;
         scalarSubscripts.emplace_back(common::Clone(subscript));
+        evaluate::NamedEntity base{symbolRef.get()};
         evaluate::DataRef dataRef{
-            evaluate::ArrayRef{*symbol, std::move(scalarSubscripts)}};
+            evaluate::ArrayRef{std::move(base), std::move(scalarSubscripts)}};
         return evaluate::Expr<T>{evaluate::Designator<T>{std::move(dataRef)}};
       }
     }
@@ -3697,15 +3724,20 @@ struct RankOneArrayElementSubstituter : public evaluate::rewrite::Identity {
 };
 
 static std::optional<Assignment::BoundsSpec>
-ExtractBoundsFromConstantExtentRankOne(ExpressionAnalyzer &analyzer,
-    Expr<SubscriptInteger> &&folded) {
+ExtractBoundsFromConstantExtentRankOne(
+    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr) {
+  auto folded{
+      evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(expr))};
+
   auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
-  auto nExpr{shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+  auto nExpr{
+      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
   if (!nExpr) {
     analyzer.Say(
         "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
     return std::nullopt;
   }
+  
   auto nFolded{
       evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
   auto n{evaluate::ToInt64(nFolded)};
@@ -3715,36 +3747,67 @@ ExtractBoundsFromConstantExtentRankOne(ExpressionAnalyzer &analyzer,
     return std::nullopt;
   }
 
-  std::vector<const Symbol *> rankOneSymbols;
+  std::vector<semantics::SymbolRef> rankOneSymbols;
+  std::set<const Symbol *> seenRankOneUltimate;
   for (const semantics::SymbolRef &ref : evaluate::CollectSymbols(folded)) {
     const Symbol &symbol{ref.get()};
     if (const semantics::ArraySpec *arraySpec{symbol.GetShape()};
         arraySpec && arraySpec->Rank() == 1) {
-      rankOneSymbols.push_back(&symbol);
+      const Symbol *ultimate{&symbol.GetUltimate()};
+      if (seenRankOneUltimate.insert(ultimate).second) {
+        rankOneSymbols.emplace_back(ref);
+      }
     }
+  }
+
+  const semantics::SomeIntExpr *someInt{
+      evaluate::UnwrapExpr<semantics::SomeIntExpr>(folded)};
+  if (!someInt) {
+    analyzer.Say(
+        "Pointer lower-bounds rank-1 expression is not INTEGER"_err_en_US);
+    return std::nullopt;
   }
 
   Assignment::BoundsSpec bounds;
   bounds.reserve(static_cast<std::size_t>(*n));
+
   for (std::int64_t k{0}; k < *n; ++k) {
-    std::vector<std::pair<const Symbol *, SubscriptIntExpr>> elementSubscripts;
+    std::vector<RankOneSubscript> elementSubscripts;
     elementSubscripts.reserve(rankOneSymbols.size());
-    for (const Symbol *symbol : rankOneSymbols) {
-      evaluate::NamedEntity base{*symbol};
+
+    for (const semantics::SymbolRef &symbolRef : rankOneSymbols) {
+      evaluate::NamedEntity base{symbolRef.get()};
       auto lb0{
           evaluate::GetRawLowerBound(analyzer.GetFoldingContext(), base, 0)};
       auto idx{evaluate::Fold(analyzer.GetFoldingContext(),
           common::Clone(lb0) + evaluate::ExtentExpr{
               static_cast<common::ConstantSubscript>(k)})};
       elementSubscripts.emplace_back(
-          symbol, SubscriptIntExpr{std::move(idx)});
+          symbolRef, SubscriptIntExpr{std::move(idx)});
     }
 
     RankOneArrayElementSubstituter rewriter{elementSubscripts};
-    auto elementExpr{
-        evaluate::rewrite::Mutator{rewriter}(common::Clone(folded))};
-    bounds.emplace_back(
-      evaluate::Fold(analyzer.GetFoldingContext(), std::move(elementExpr)));
+    std::optional<Bound> elementBound;
+
+    common::visit(
+        [&](const auto &kindExpr) {
+          auto scalarized{
+              evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+          semantics::SomeIntExpr one{std::move(scalarized)};
+          auto sub{evaluate::Fold(analyzer.GetFoldingContext(),
+              evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                  std::move(one)))};
+          elementBound.emplace(std::move(sub));
+        },
+        someInt->u);
+
+    if (!elementBound || elementBound->Rank() != 0) {
+      analyzer.Say(
+          "Pointer lower-bounds rank-1 expression could not be scalarized"_err_en_US);
+      return std::nullopt;
+    }
+
+    bounds.emplace_back(std::move(*elementBound));
   }
 
   return bounds;
@@ -3788,13 +3851,16 @@ const Assignment *ExpressionAnalyzer::Analyze(
                   rewriteBoundsSpecListToBounds(listOrBounds);
                   const auto &boundsBounds{
                       std::get<parser::BoundsBoundsSpec>(listOrBounds.u)};
-                  if (auto lower{AsSubscript(Analyze(boundsBounds))}) {
-                    auto folded{Fold(std::move(*lower))};
-                    if (folded.Rank() == 0) {
-                      bounds.emplace_back(std::move(folded));
+
+                  // Analyze raw expression first (before AsSubscript inserts int(...,kind=8)).
+                  if (MaybeExpr rawLower{Analyze(boundsBounds)}) {
+                    if (rawLower->Rank() == 0) {
+                      if (auto lower{AsSubscript(std::move(rawLower))}) {
+                        bounds.emplace_back(Fold(std::move(*lower)));
+                      }
                     } else if (auto extracted{
                                   ExtractBoundsFromConstantExtentRankOne(
-                                      *this, std::move(folded))}) {
+                                      *this, std::move(*rawLower))}) {
                       bounds = std::move(*extracted);
                     }
                   }
@@ -3805,6 +3871,13 @@ const Assignment *ExpressionAnalyzer::Analyze(
                       bounds.emplace_back(Fold(std::move(*lower)));
                     }
                   }
+                }
+
+                llvm::errs() << "DBG[sem] final bounds count=" << bounds.size() << '\n';
+                for (std::size_t i{0}; i < bounds.size(); ++i) {
+                  llvm::errs() << "DBG[sem] final[" << i << "] rank=" << bounds[i].Rank()
+                              << " expr=";
+                  bounds[i].AsFortran(llvm::errs()) << '\n';
                 }
                 assignment.u = std::move(bounds);
               },
