@@ -1,4 +1,37 @@
 ! RUN: %python %S/test_errors.py %s %flang_fc1 -Wautomatic-in-main-program -Wsaved-local-in-spec-expr
+! ---- Module with rank-1 array-bounded declarations, USE'd elsewhere ----
+module bounds_provider
+  implicit none
+  integer, parameter :: dims(3) = [5, 5, 5]
+  integer, parameter :: lo(2) = [2, 3]
+  integer, parameter :: hi(2) = [10, 20]
+end module
+module consumer
+  use bounds_provider
+  implicit none
+  ! Declare arrays using USE-associated rank-1 parameter arrays
+  !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
+  integer :: arr_upper(dims)
+  !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
+  integer :: arr_both(lo : hi)
+end module
+subroutine sub_consumer()
+  use bounds_provider, only: dims, lo, hi
+  implicit none
+  ! USE'd parameter arrays as bounds in a subroutine
+  !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
+  integer :: local_arr(dims)
+  !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
+  integer :: local_arr2(lo : hi)
+end subroutine
+subroutine sub_use_consumer()
+  use consumer, only: arr_upper, arr_both
+  implicit none
+  ! USE the arrays that were themselves declared with rank-1 array bounds
+  arr_upper = 1
+  arr_both = 2
+end subroutine
+
 module data 
   integer :: rank1_array_module(3) = [5, 5, 5]
   !future_ERROR: Automatic data object 'gg2' may not appear in a module
@@ -18,6 +51,8 @@ program declaration_array_bounds
   ! Array upper bound only
   !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
   integer :: c([3, 4, 5])
+  !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
+  integer, dimension([3, 4, 5]) :: cc
 
   ! Array lower and upper bounds, same size
   !ERROR: TODO: Analyze overload for ExplicitShapeBoundsSpec
