@@ -242,8 +242,8 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::ComponentArraySpec &x) {
 static bool shouldRewriteShapeSpecListToExplicitBounds(
     SemanticsContext &context, const parser::ArraySpec &x) {
   auto &explicitShapeSpecList{std::get<std::list<parser::ExplicitShapeSpec>>(
-      const_cast<parser::ArraySpec&>(x).u)};
-  
+      const_cast<parser::ArraySpec &>(x).u)};
+
   if (explicitShapeSpecList.size() != 1) {
     return false;
   }
@@ -251,51 +251,52 @@ static bool shouldRewriteShapeSpecListToExplicitBounds(
   auto &explicitShapeSpec{explicitShapeSpecList.front()};
   const auto &upperBound{std::get<1>(explicitShapeSpec.t)};
   const auto &lowerBoundOpt{std::get<0>(explicitShapeSpec.t)};
-  
+
   bool foundArray{false};
-  
-  if (MaybeExpr analyzedExpr = AnalyzeExpr(context, upperBound.v.thing.thing.value());
+
+  if (MaybeExpr analyzedExpr =
+          AnalyzeExpr(context, upperBound.v.thing.thing.value());
       analyzedExpr && (analyzedExpr->Rank() > 0)) {
     foundArray = true;
   }
-  
+
   if (lowerBoundOpt) {
     const auto &lowerBound{*lowerBoundOpt};
-    if (MaybeExpr analyzedExpr = AnalyzeExpr(context, lowerBound.v.thing.thing.value());
+    if (MaybeExpr analyzedExpr =
+            AnalyzeExpr(context, lowerBound.v.thing.thing.value());
         analyzedExpr && (analyzedExpr->Rank() > 0)) {
       foundArray = true;
     }
   }
-  
+
   return foundArray;
 }
 
 static void rewriteShapeSpecListToExplicitBounds(const parser::ArraySpec &x) {
   auto &explicitShapeSpecList{std::get<std::list<parser::ExplicitShapeSpec>>(
-      const_cast<parser::ArraySpec&>(x).u)};
-  auto &mutableArraySpec{const_cast<parser::ArraySpec&>(x)};
+      const_cast<parser::ArraySpec &>(x).u)};
+  auto &mutableArraySpec{const_cast<parser::ArraySpec &>(x)};
   auto &mutableExplicitShapeSpec{explicitShapeSpecList.front()};
-  
+
   auto &mutableUpperBound{std::get<1>(mutableExplicitShapeSpec.t)};
   parser::IntExpr upperIntExpr{std::move(mutableUpperBound.v.thing)};
 
-
   auto &mutableLowerBound{std::get<0>(mutableExplicitShapeSpec.t)};
   std::optional<parser::IntExpr> lowerIntExpr;
-  if(mutableLowerBound) {
+  if (mutableLowerBound) {
     lowerIntExpr = std::move(mutableLowerBound->v.thing);
   }
-  
+
   parser::ExplicitShapeBoundsSpec boundsSpec{
-    std::make_tuple(std::move(lowerIntExpr), std::move(upperIntExpr))};
+      std::make_tuple(std::move(lowerIntExpr), std::move(upperIntExpr))};
   mutableArraySpec.u = std::move(boundsSpec);
 
   return;
 }
 
 ArraySpec ArraySpecAnalyzer::Analyze(const parser::ArraySpec &x) {
-  if(std::get_if<std::list<parser::ExplicitShapeSpec>>(&x.u) && 
-     shouldRewriteShapeSpecListToExplicitBounds(context_, x)) {
+  if (std::get_if<std::list<parser::ExplicitShapeSpec>>(&x.u) &&
+      shouldRewriteShapeSpecListToExplicitBounds(context_, x)) {
     rewriteShapeSpecListToExplicitBounds(x);
   }
   common::visit(common::visitors{
@@ -304,11 +305,8 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::ArraySpec &x) {
                           std::get<std::list<parser::ExplicitShapeSpec>>(y.t));
                       Analyze(std::get<parser::AssumedImpliedSpec>(y.t));
                     },
-                    [&](const parser::ImpliedShapeSpec &y) { 
-                      Analyze(y.v); },
-                    [&](const auto &y) { 
-                      Analyze(y); 
-                    },
+                    [&](const parser::ImpliedShapeSpec &y) { Analyze(y.v); },
+                    [&](const auto &y) { Analyze(y); },
                 },
       x.u);
   CHECK(!arraySpec_.empty());
@@ -345,7 +343,8 @@ void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeSpec &x) {
 
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
   context_.Say("TODO: Analyze overload for ExplicitShapeBoundsSpec"_err_en_US);
-  // prevent CHECK abort in Analyze(ArraySpec), otherwise it'll abort before printing error message
+  // prevent CHECK abort in Analyze(ArraySpec), otherwise it'll abort before
+  // printing error message
   arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
 }
 

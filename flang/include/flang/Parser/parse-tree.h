@@ -1333,15 +1333,14 @@ using ExplicitBoundsExpr = IntExpr;
 
 struct ExplicitShapeBoundsSpec {
   TUPLE_CLASS_BOILERPLATE(ExplicitShapeBoundsSpec);
-  std::tuple<std::optional<ExplicitBoundsExpr>, ExplicitBoundsExpr>
-  t;
+  std::tuple<std::optional<ExplicitBoundsExpr>, ExplicitBoundsExpr> t;
 };
 
 struct ArraySpec {
   UNION_CLASS_BOILERPLATE(ArraySpec);
-  std::variant<std::list<ExplicitShapeSpec>, ExplicitShapeBoundsSpec, 
-      std::list<AssumedShapeSpec>, DeferredShapeSpecList, 
-      AssumedSizeSpec, ImpliedShapeSpec, AssumedRankSpec>
+  std::variant<std::list<ExplicitShapeSpec>, ExplicitShapeBoundsSpec,
+      std::list<AssumedShapeSpec>, DeferredShapeSpecList, AssumedSizeSpec,
+      ImpliedShapeSpec, AssumedRankSpec>
       u;
 };
 
