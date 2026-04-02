@@ -195,6 +195,8 @@ public:
   NODE(parser, BlockSpecificationPart)
   NODE(parser, BlockStmt)
   NODE(parser, BoundsRemapping)
+  NODE(parser, BoundsRemappingBoundsSpec)
+  NODE(PointerAssignmentStmt, BoundsRemappingListOrBounds)
   NODE(parser, BoundsSpec)
   NODE(parser, Call)
   NODE(parser, CallStmt)
