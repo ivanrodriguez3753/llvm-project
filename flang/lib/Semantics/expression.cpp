@@ -3646,7 +3646,8 @@ const Assignment *ExpressionAnalyzer::Analyze(
       Assignment assignment{std::move(*lhs), std::move(*rhs)};
       common::visit(
           common::visitors{
-              [&](const std::list<parser::BoundsRemapping> &list) {
+              [&](const parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &listOrBounds) {
+                const auto &list{std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
                 Assignment::BoundsRemapping bounds;
                 for (const auto &elem : list) {
                   auto lower{AsSubscript(Analyze(std::get<0>(elem.t)))};

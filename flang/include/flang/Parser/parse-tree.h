@@ -2003,17 +2003,29 @@ struct BoundsRemapping {
   std::tuple<BoundExpr, BoundExpr> t;
 };
 
+using BoundsExpr = IntExpr;
+
+struct BoundsRemappingBoundsSpec {
+  TUPLE_CLASS_BOILERPLATE(BoundsRemappingBoundsSpec);
+  std::tuple<BoundsExpr, BoundsExpr> t;
+};
+
 // R1033 pointer-assignment-stmt ->
 //         data-pointer-object [( bounds-spec-list )] => data-target |
 //         data-pointer-object ( bounds-remapping-list ) => data-target |
+//         data-pointer-object ( lower-bounds-expr : upper-bounds-expr )
 //         proc-pointer-object => proc-target
 // R1034 data-pointer-object ->
 //         variable-name | scalar-variable % data-pointer-component-name
 // R1038 proc-pointer-object -> proc-pointer-name | proc-component-ref
 struct PointerAssignmentStmt {
+  struct BoundsRemappingListOrBounds {
+    UNION_CLASS_BOILERPLATE(BoundsRemappingListOrBounds);
+    std::variant<std::list<BoundsRemapping>, BoundsRemappingBoundsSpec> u;
+  };
   struct Bounds {
     UNION_CLASS_BOILERPLATE(Bounds);
-    std::variant<std::list<BoundsRemapping>, std::list<BoundsSpec>> u;
+    std::variant<BoundsRemappingListOrBounds, std::list<BoundsSpec>> u;
   };
   TUPLE_CLASS_BOILERPLATE(PointerAssignmentStmt);
   mutable TypedAssignment typedAssignment;
