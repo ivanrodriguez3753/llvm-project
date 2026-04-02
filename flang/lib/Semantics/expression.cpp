@@ -3630,6 +3630,58 @@ const Assignment *ExpressionAnalyzer::Analyze(const parser::AssignmentStmt &x) {
   return common::GetPtrFromOptional(x.typedAssignment->v);
 }
 
+static bool shouldRewriteBoundsRemappingListToBounds(
+    semantics::SemanticsContext &context,
+    const parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &listOrBounds) {
+  const auto &boundsRemappingList{std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
+  if(boundsRemappingList.size() != 1) {
+    return false;
+  }
+
+  const auto &boundsRemapping{boundsRemappingList.front()};
+  const auto &upperBound{std::get<1>(boundsRemapping.t)};
+  const auto &lowerBound{std::get<0>(boundsRemapping.t)};
+
+  bool foundArray{false};
+
+  if (MaybeExpr analyzedExpr =
+          AnalyzeExpr(context, upperBound.thing.thing.value());
+      analyzedExpr && (analyzedExpr->Rank() > 0)) {
+    foundArray = true;
+  }
+
+  if (MaybeExpr analyzedExpr =
+          AnalyzeExpr(context, lowerBound.thing.thing.value());
+      analyzedExpr && (analyzedExpr->Rank() > 0)) {
+    foundArray = true;
+  }
+
+  return foundArray;
+}
+
+static void rewriteBoundsRemappingListToBounds(
+    const parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &listOrBounds) {
+  auto &mutableListOrBounds{
+    const_cast<parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &>(
+        listOrBounds)};
+  auto &boundsRemappingList{std::get<std::list<parser::BoundsRemapping>>(mutableListOrBounds.u)};
+  auto &mutableBoundsRemapping{boundsRemappingList.front()};
+  auto &mutableUpperBound{std::get<1>(mutableBoundsRemapping.t)};
+  parser::IntExpr upperIntExpr{std::move(mutableUpperBound.thing)};
+  auto &mutableLowerBound{std::get<0>(mutableBoundsRemapping.t)};
+  parser::IntExpr lowerIntExpr{std::move(mutableLowerBound.thing)};
+  parser::BoundsRemappingBoundsSpec boundsSpec{
+      std::make_tuple(std::move(lowerIntExpr), std::move(upperIntExpr))};
+  mutableListOrBounds.u = std::move(boundsSpec);
+
+  return;
+}
+
+MaybeExpr ExpressionAnalyzer::Analyze(const parser::BoundsRemappingBoundsSpec &) {
+  printf("Called Analyze(const parser::BoundsRemappingBoundsSpec &)\n");
+  return std::nullopt;
+}
+
 const Assignment *ExpressionAnalyzer::Analyze(
     const parser::PointerAssignmentStmt &x) {
   if (!x.typedAssignment) {
@@ -3647,14 +3699,21 @@ const Assignment *ExpressionAnalyzer::Analyze(
       common::visit(
           common::visitors{
               [&](const parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &listOrBounds) {
-                const auto &list{std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
                 Assignment::BoundsRemapping bounds;
-                for (const auto &elem : list) {
-                  auto lower{AsSubscript(Analyze(std::get<0>(elem.t)))};
-                  auto upper{AsSubscript(Analyze(std::get<1>(elem.t)))};
-                  if (lower && upper) {
-                    bounds.emplace_back(
-                        Fold(std::move(*lower)), Fold(std::move(*upper)));
+                if(shouldRewriteBoundsRemappingListToBounds(context_, listOrBounds)) {
+                  rewriteBoundsRemappingListToBounds(listOrBounds);
+                  const auto &boundsRemappingBounds{std::get<parser::BoundsRemappingBoundsSpec>(listOrBounds.u)};
+                  Analyze(boundsRemappingBounds);
+                }
+                else {
+                  const auto &list{std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
+                    for (const auto &elem : list) {
+                    auto lower{AsSubscript(Analyze(std::get<0>(elem.t)))};
+                    auto upper{AsSubscript(Analyze(std::get<1>(elem.t)))};
+                    if (lower && upper) {
+                      bounds.emplace_back(
+                          Fold(std::move(*lower)), Fold(std::move(*upper)));
+                    }
                   }
                 }
                 assignment.u = std::move(bounds);
