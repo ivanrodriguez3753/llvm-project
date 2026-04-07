@@ -16,6 +16,7 @@
 #include "flang/Evaluate/common.h"
 #include "flang/Evaluate/fold.h"
 #include "flang/Evaluate/tools.h"
+#include "flang/Evaluate/rewrite.h"
 #include "flang/Parser/characters.h"
 #include "flang/Parser/dump-parse-tree.h"
 #include "flang/Parser/parse-tree-visitor.h"
@@ -3677,6 +3678,139 @@ static void rewriteBoundsRemappingListToBounds(
   return;
 }
 
+using Bound = Expr<SubscriptInteger>;
+using SubscriptIntExpr = Expr<SubscriptInteger>;
+using RankOneSubscript = std::pair<semantics::SymbolRef, SubscriptIntExpr>;
+
+struct RankOneArrayElementSubstituter {
+  const std::vector<RankOneSubscript> &subscripts;
+
+  explicit RankOneArrayElementSubstituter(
+      const std::vector<RankOneSubscript> &s)
+      : subscripts{s} {}
+
+  template <typename T, typename U>
+  evaluate::Expr<T> operator()(evaluate::Expr<T> &&x, const U &) const {
+    return std::move(x);
+  }
+
+  template <typename T>
+  evaluate::Expr<T> operator()(
+      evaluate::Expr<T> &&x,
+      const evaluate::Designator<T> &designator) const {
+    if (designator.Rank() != 1) {
+      return std::move(x);
+    }
+    const Symbol *last{designator.GetLastSymbol()};
+    if (!last) {
+      return std::move(x);
+    }
+    const Symbol &lastUltimate{last->GetUltimate()};
+
+    for (const auto &[symbolRef, subscript] : subscripts) {
+      if (&symbolRef.get().GetUltimate() == &lastUltimate) {
+        std::vector<evaluate::Subscript> scalarSubscripts;
+        scalarSubscripts.emplace_back(common::Clone(subscript));
+        evaluate::NamedEntity base{symbolRef.get()};
+        evaluate::DataRef dataRef{
+            evaluate::ArrayRef{std::move(base), std::move(scalarSubscripts)}};
+        return evaluate::Expr<T>{evaluate::Designator<T>{std::move(dataRef)}};
+      }
+    }
+    return std::move(x);
+  }
+};
+
+static std::optional<Assignment::BoundsSpec>
+ExtractBoundsFromConstantExtentRankOne(
+    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr) {
+  auto folded{
+      evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(expr))};
+
+  auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
+  auto nExpr{
+      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+  if (!nExpr) {
+    analyzer.Say(
+        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+    return std::nullopt;
+  }
+  
+  auto nFolded{
+      evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
+  auto n{evaluate::ToInt64(nFolded)};
+  if (!n || *n < 0) {
+    analyzer.Say(
+        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+    return std::nullopt;
+  }
+
+  std::vector<semantics::SymbolRef> rankOneSymbols;
+  std::set<const Symbol *> seenRankOneUltimate;
+  for (const semantics::SymbolRef &ref : evaluate::CollectSymbols(folded)) {
+    const Symbol &symbol{ref.get()};
+    if (const semantics::ArraySpec *arraySpec{symbol.GetShape()};
+        arraySpec && arraySpec->Rank() == 1) {
+      const Symbol *ultimate{&symbol.GetUltimate()};
+      if (seenRankOneUltimate.insert(ultimate).second) {
+        rankOneSymbols.emplace_back(ref);
+      }
+    }
+  }
+
+  const semantics::SomeIntExpr *someInt{
+      evaluate::UnwrapExpr<semantics::SomeIntExpr>(folded)};
+  if (!someInt) {
+    analyzer.Say(
+        "Pointer lower-bounds rank-1 expression is not INTEGER"_err_en_US);
+    return std::nullopt;
+  }
+
+  Assignment::BoundsSpec bounds;
+  bounds.reserve(static_cast<std::size_t>(*n));
+
+  for (std::int64_t k{0}; k < *n; ++k) {
+    std::vector<RankOneSubscript> elementSubscripts;
+    elementSubscripts.reserve(rankOneSymbols.size());
+
+    for (const semantics::SymbolRef &symbolRef : rankOneSymbols) {
+      evaluate::NamedEntity base{symbolRef.get()};
+      auto lb0{
+          evaluate::GetRawLowerBound(analyzer.GetFoldingContext(), base, 0)};
+      auto idx{evaluate::Fold(analyzer.GetFoldingContext(),
+          common::Clone(lb0) + evaluate::ExtentExpr{
+              static_cast<common::ConstantSubscript>(k)})};
+      elementSubscripts.emplace_back(
+          symbolRef, SubscriptIntExpr{std::move(idx)});
+    }
+
+    RankOneArrayElementSubstituter rewriter{elementSubscripts};
+    std::optional<Bound> elementBound;
+
+    common::visit(
+        [&](const auto &kindExpr) {
+          auto scalarized{
+              evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+          semantics::SomeIntExpr one{std::move(scalarized)};
+          auto sub{evaluate::Fold(analyzer.GetFoldingContext(),
+              evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                  std::move(one)))};
+          elementBound.emplace(std::move(sub));
+        },
+        someInt->u);
+
+    if (!elementBound || elementBound->Rank() != 0) {
+      analyzer.Say(
+          "Pointer lower-bounds rank-1 expression could not be scalarized"_err_en_US);
+      return std::nullopt;
+    }
+
+    bounds.emplace_back(std::move(*elementBound));
+  }
+
+  return bounds;
+}
+
 MaybeExpr ExpressionAnalyzer::Analyze(const parser::BoundsRemappingBoundsSpec &) {
   printf("Called Analyze(const parser::BoundsRemappingBoundsSpec &)\n");
   return std::nullopt;
@@ -3700,14 +3834,51 @@ const Assignment *ExpressionAnalyzer::Analyze(
           common::visitors{
               [&](const parser::PointerAssignmentStmt::BoundsRemappingListOrBounds &listOrBounds) {
                 Assignment::BoundsRemapping bounds;
-                if(shouldRewriteBoundsRemappingListToBounds(context_, listOrBounds)) {
+                if (shouldRewriteBoundsRemappingListToBounds(context_, listOrBounds)) {
                   rewriteBoundsRemappingListToBounds(listOrBounds);
-                  const auto &boundsRemappingBounds{std::get<parser::BoundsRemappingBoundsSpec>(listOrBounds.u)};
-                  Analyze(boundsRemappingBounds);
-                }
-                else {
-                  const auto &list{std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
-                    for (const auto &elem : list) {
+                  const auto &boundsRemappingBounds{
+                      std::get<parser::BoundsRemappingBoundsSpec>(listOrBounds.u)};
+
+                  const auto &lowerIntExpr{std::get<0>(boundsRemappingBounds.t)};
+                  const auto &upperIntExpr{std::get<1>(boundsRemappingBounds.t)};
+
+                  // Analyze raw expressions first (before AsSubscript inserts int(...,kind=8)).
+                  MaybeExpr rawLower{Analyze(lowerIntExpr)};
+                  MaybeExpr rawUpper{Analyze(upperIntExpr)};
+
+                  if (rawLower && rawUpper) {
+                    if (rawLower->Rank() == 0 && rawUpper->Rank() == 0) {
+                      // Both are scalar — single remapping pair.
+                      auto lower{AsSubscript(std::move(rawLower))};
+                      auto upper{AsSubscript(std::move(rawUpper))};
+                      if (lower && upper) {
+                        bounds.emplace_back(
+                            Fold(std::move(*lower)), Fold(std::move(*upper)));
+                      }
+                    } else if (rawLower->Rank() > 0 && rawUpper->Rank() > 0) {
+                      // Both are rank-1 arrays — extract element-wise pairs.
+                      auto extractedLower{ExtractBoundsFromConstantExtentRankOne(
+                          *this, std::move(*rawLower))};
+                      auto extractedUpper{ExtractBoundsFromConstantExtentRankOne(
+                          *this, std::move(*rawUpper))};
+                      if (extractedLower && extractedUpper) {
+                        if (extractedLower->size() == extractedUpper->size()) {
+                          for (std::size_t i{0}; i < extractedLower->size(); ++i) {
+                            bounds.emplace_back(std::move((*extractedLower)[i]),
+                                std::move((*extractedUpper)[i]));
+                          }
+                        } else {
+                          Say("Pointer bounds-remapping lower and upper rank-1 expressions must have the same extent"_err_en_US);
+                        }
+                      }
+                    } else {
+                      Say("Pointer bounds-remapping lower and upper expressions must have the same rank"_err_en_US);
+                    }
+                  }
+                } else {
+                  const auto &list{
+                      std::get<std::list<parser::BoundsRemapping>>(listOrBounds.u)};
+                  for (const auto &elem : list) {
                     auto lower{AsSubscript(Analyze(std::get<0>(elem.t)))};
                     auto upper{AsSubscript(Analyze(std::get<1>(elem.t)))};
                     if (lower && upper) {
