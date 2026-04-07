@@ -3876,7 +3876,30 @@ const Assignment *ExpressionAnalyzer::Analyze(
                         }
                       }
                     } else {
-                      Say("Pointer bounds-remapping lower and upper expressions must have the same rank"_err_en_US);
+                      // One is scalar, one is rank-1 — broadcast the scalar
+                      // to match the extent of the array.
+                      bool lowerIsScalar{rawLower->Rank() == 0};
+                      MaybeExpr &rawArray{lowerIsScalar ? rawUpper : rawLower};
+                      MaybeExpr &rawScalar{lowerIsScalar ? rawLower : rawUpper};
+
+                      auto extractedArray{ExtractBoundsFromConstantExtentRankOne(
+                          *this, std::move(*rawArray))};
+                      auto scalarSub{AsSubscript(std::move(rawScalar))};
+
+                      if (extractedArray && scalarSub) {
+                        auto foldedScalar{Fold(std::move(*scalarSub))};
+                        for (std::size_t i{0}; i < extractedArray->size(); ++i) {
+                          if (lowerIsScalar) {
+                            bounds.emplace_back(
+                                common::Clone(foldedScalar),
+                                std::move((*extractedArray)[i]));
+                          } else {
+                            bounds.emplace_back(
+                                std::move((*extractedArray)[i]),
+                                common::Clone(foldedScalar));
+                          }
+                        }
+                      }
                     }
                   }
                 } else {
