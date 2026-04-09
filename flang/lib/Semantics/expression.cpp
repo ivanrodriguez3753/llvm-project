@@ -4124,7 +4124,7 @@ static std::optional<Assignment::BoundsSpec> checkBoundsBoundsSpec(
   }
   if (rawLower->Rank() > 1) {
     analyzer.Say(parser::FindSourceLocation(x),
-        "Subscript expression has rank %d greater than 1"_err_en_US,
+        "Integer array used as lower bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-%d"_err_en_US,
         rawLower->Rank());
     rankError = true;
   }
@@ -4136,7 +4136,7 @@ static std::optional<Assignment::BoundsSpec> checkBoundsBoundsSpec(
       shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
   if (!nExpr) {
     analyzer.Say(parser::FindSourceLocation(x),
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+        "Rank-1 integer array used as lower bounds in POINTER-ASSIGNMENT must have constant size"_err_en_US);
     nonConstSizeError = true;
   }
   auto nFolded{
@@ -4144,7 +4144,7 @@ static std::optional<Assignment::BoundsSpec> checkBoundsBoundsSpec(
   auto n{evaluate::ToInt64(nFolded)};
   if (!n || *n < 0) {
     analyzer.Say(parser::FindSourceLocation(x),
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+        "Rank-1 integer array used as lower bounds in POINTER-ASSIGNMENT must have constant size"_err_en_US);
     nonConstSizeError = true;
     return std::nullopt;
   }
@@ -4204,6 +4204,7 @@ const Assignment *ExpressionAnalyzer::Analyze(
                       std::get<parser::BoundsBoundsSpec>(listOrBounds.u)};
                   if (auto result{checkBoundsBoundsSpec(*this, boundsBounds)}) {
                     bounds = std::move(*result);
+                    assignment.boundsFromRankOneExpr = true;
                   }
                 } else {
                   const auto &list{std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
