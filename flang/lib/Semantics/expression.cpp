@@ -4213,13 +4213,6 @@ const Assignment *ExpressionAnalyzer::Analyze(
                     }
                   }
                 }
-
-                llvm::errs() << "DBG[sem] final bounds count=" << bounds.size() << '\n';
-                for (std::size_t i{0}; i < bounds.size(); ++i) {
-                  llvm::errs() << "DBG[sem] final[" << i << "] rank=" << bounds[i].Rank()
-                              << " expr=";
-                  bounds[i].AsFortran(llvm::errs()) << '\n';
-                }
                 assignment.u = std::move(bounds);
               },
           },
