@@ -3725,27 +3725,9 @@ struct RankOneArrayElementSubstituter {
 
 static std::optional<Assignment::BoundsSpec>
 ExtractBoundsFromConstantExtentRankOne(
-    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr) {
+    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr, std::int64_t n) {
   auto folded{
       evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(expr))};
-
-  auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
-  auto nExpr{
-      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
-  if (!nExpr) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
-    return std::nullopt;
-  }
-  
-  auto nFolded{
-      evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
-  auto n{evaluate::ToInt64(nFolded)};
-  if (!n || *n < 0) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
-    return std::nullopt;
-  }
 
   std::vector<semantics::SymbolRef> rankOneSymbols;
   std::set<const Symbol *> seenRankOneUltimate;
@@ -3762,16 +3744,11 @@ ExtractBoundsFromConstantExtentRankOne(
 
   const semantics::SomeIntExpr *someInt{
       evaluate::UnwrapExpr<semantics::SomeIntExpr>(folded)};
-  if (!someInt) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression is not INTEGER"_err_en_US);
-    return std::nullopt;
-  }
 
   Assignment::BoundsSpec bounds;
-  bounds.reserve(static_cast<std::size_t>(*n));
+  bounds.reserve(static_cast<std::size_t>(n));
 
-  for (std::int64_t k{0}; k < *n; ++k) {
+  for (std::int64_t k{0}; k < n; ++k) {
     std::vector<RankOneSubscript> elementSubscripts;
     elementSubscripts.reserve(rankOneSymbols.size());
 
@@ -3801,12 +3778,6 @@ ExtractBoundsFromConstantExtentRankOne(
         },
         someInt->u);
 
-    if (!elementBound || elementBound->Rank() != 0) {
-      analyzer.Say(
-          "Pointer lower-bounds rank-1 expression could not be scalarized"_err_en_US);
-      return std::nullopt;
-    }
-
     bounds.emplace_back(std::move(*elementBound));
   }
 
@@ -3815,6 +3786,88 @@ ExtractBoundsFromConstantExtentRankOne(
 
 MaybeExpr ExpressionAnalyzer::Analyze(const parser::BoundsBoundsSpec &x) {
   return Analyze(x.v);
+}
+
+// bool ArraySpecAnalyzer::checkAssumedShapeBoundsSpec(
+//     const parser::AssumedShapeBoundsSpec &x) {
+//   MaybeExpr lbExpr{AnalyzeExpr(context_, x.v.thing)};
+//   if (!lbExpr) {
+//     return false;
+//   }
+
+//   bool rankError{false}, nonConstSizeError{false};
+
+//   if (lbExpr->Rank() != 1) {
+//     parser::CharBlock at{parser::FindSourceLocation(x)};
+//     context_.Say(at,
+//         "Integer array used as lower bounds in DECLARATION must be rank-1 but is rank-%d"_err_en_US,
+//         lbExpr->Rank());
+//     rankError = true;
+//   }
+
+//   auto shape{evaluate::GetShape(context_.foldingContext(), *lbExpr)};
+//   auto sizeExpr{
+//       shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+//   auto sizeFolded{
+//       sizeExpr ? evaluate::Fold(context_.foldingContext(), std::move(*sizeExpr))
+//                : evaluate::ExtentExpr{0}};
+//   if (!evaluate::ToInt64(sizeFolded)) {
+//     context_.Say(parser::FindSourceLocation(x),
+//         "Rank-1 integer array used as lower bounds in DECLARATION must have constant size"_err_en_US);
+//     nonConstSizeError = true;
+//   }
+
+//   return !(rankError || nonConstSizeError);
+// }
+
+static std::optional<Assignment::BoundsSpec> checkBoundsBoundsSpec(
+    ExpressionAnalyzer &analyzer, const parser::BoundsBoundsSpec &x) {
+  MaybeExpr rawLower{analyzer.Analyze(x.v)};
+  if (!rawLower) {
+    return std::nullopt;
+  }
+
+  bool rankError{false}, nonConstSizeError{false};
+  if (rawLower->Rank() == 0) {
+    if (auto lower{AsSubscriptForPointerBounds(analyzer, std::move(rawLower))}) {
+      Assignment::BoundsSpec bounds;
+      bounds.emplace_back(evaluate::Fold(analyzer.GetFoldingContext(), std::move(*lower)));
+      return bounds;
+    }
+    return std::nullopt;
+  }
+  if (rawLower->Rank() > 1) {
+    analyzer.Say(parser::FindSourceLocation(x),
+        "Subscript expression has rank %d greater than 1"_err_en_US,
+        rawLower->Rank());
+    rankError = true;
+  }
+  // Validate constant extent for rank-1 expression
+  auto folded{
+      evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(*rawLower))};
+  auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
+  auto nExpr{
+      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+  if (!nExpr) {
+    analyzer.Say(parser::FindSourceLocation(x),
+        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+    nonConstSizeError = true;
+  }
+  auto nFolded{
+      evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
+  auto n{evaluate::ToInt64(nFolded)};
+  if (!n || *n < 0) {
+    analyzer.Say(parser::FindSourceLocation(x),
+        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
+    nonConstSizeError = true;
+    return std::nullopt;
+  }
+  if (rankError || nonConstSizeError) {
+    return std::nullopt;
+  }
+
+  return ExtractBoundsFromConstantExtentRankOne(
+      analyzer, std::move(*rawLower), *n);
 }
 
 const Assignment *ExpressionAnalyzer::Analyze(
@@ -3851,18 +3904,8 @@ const Assignment *ExpressionAnalyzer::Analyze(
                   rewriteBoundsSpecListToBounds(listOrBounds);
                   const auto &boundsBounds{
                       std::get<parser::BoundsBoundsSpec>(listOrBounds.u)};
-
-                  // Analyze raw expression first (before AsSubscript inserts int(...,kind=8)).
-                  if (MaybeExpr rawLower{Analyze(boundsBounds)}) {
-                    if (rawLower->Rank() == 0) {
-                      if (auto lower{AsSubscript(std::move(rawLower))}) {
-                        bounds.emplace_back(Fold(std::move(*lower)));
-                      }
-                    } else if (auto extracted{
-                                  ExtractBoundsFromConstantExtentRankOne(
-                                      *this, std::move(*rawLower))}) {
-                      bounds = std::move(*extracted);
-                    }
+                  if (auto result{checkBoundsBoundsSpec(*this, boundsBounds)}) {
+                    bounds = std::move(*result);
                   }
                 } else {
                   const auto &list{std::get<std::list<parser::BoundsSpec>>(listOrBounds.u)};
