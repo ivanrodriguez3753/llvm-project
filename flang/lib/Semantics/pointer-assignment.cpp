@@ -565,9 +565,15 @@ static bool CheckPointerBounds(
       assignment.u)};
   if (numBounds > 0) {
     if (lhs.Rank() != static_cast<int>(numBounds)) {
-      messages.Say("Pointer '%s' has rank %d but the number of bounds specified"
-                   " is %d"_err_en_US,
-          lhs.AsFortran(), lhs.Rank(), numBounds); // C1018
+      if(!assignment.boundsFromRankOneExpr) {
+        messages.Say("Pointer '%s' has rank %d but the number of bounds specified"
+                      " is %d"_err_en_US,
+            lhs.AsFortran(), lhs.Rank(), numBounds); // C1018
+      } else {
+        messages.Say("Pointer '%s' has rank %d but the extent of bounds array"
+                      " is %d"_err_en_US,
+            lhs.AsFortran(), lhs.Rank(), numBounds); // C1018
+      }
     }
   }
   if (isBoundsRemapping && rhs.Rank() != 1 &&

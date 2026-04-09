@@ -20,16 +20,16 @@ program main
   !size mismatch 
   !ERROR: Pointer 'y' has rank 1 but the number of bounds specified is 2
   y(l_s:, l_s:) => x
-  !TODO: Don't reuse error message from bounds-spec-list (above) for bounds-bounds-spec
-  !ERROR: Pointer 'y' has rank 1 but the number of bounds specified is 2
+  ! Checking that we don't reuse error message from bounds-spec-list (above) for bounds-bounds-spec
+  !ERROR: Pointer 'y' has rank 1 but the extent of bounds array is 2
   y(l_a2:) => x
 
-  !ERROR: Pointer lower-bounds rank-1 expression must have known constant extent
+  !ERROR: Rank-1 integer array used as lower bounds in POINTER-ASSIGNMENT must have constant size
   y(nonconst_size_arr:) => x
-  !ERROR: Subscript expression has rank 2 greater than 1
+  !ERROR: Integer array used as lower bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-2
   y(rank2_const_size_arr:) => x
-  !ERROR: Subscript expression has rank 2 greater than 1
-  !ERROR: Pointer lower-bounds rank-1 expression must have known constant extent
+  !ERROR: Integer array used as lower bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-2
+  !ERROR: Rank-1 integer array used as lower bounds in POINTER-ASSIGNMENT must have constant size
   y(rank2_nonconst_size_arr:) => x
   !ERROR: Must have INTEGER type, but is REAL(4)
   y([1.2]:) => x
