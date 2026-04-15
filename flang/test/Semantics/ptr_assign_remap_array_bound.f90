@@ -18,11 +18,11 @@ program main
   !negative cases 
   !ERROR: POINTER-ASSIGNMENT bounds integer rank-1 arrays must have the same size; lower bounds has 1 elements, upper bounds has 2 elements
   a([1] : [6,6]) => x
-  !ERROR: Pointer 'a' has rank 2 but the number of bounds specified is 1
+  !ERROR: Pointer 'a' has rank 2 but the extent of bounds array is 1
   a([1] : [6]) => x
-  !ERROR: Pointer 'a' has rank 2 but the number of bounds specified is 1
+  !ERROR: Pointer 'a' has rank 2 but the extent of bounds array is 1
   a([1] : 6) => x
-  !ERROR: Pointer 'a' has rank 2 but the number of bounds specified is 1
+  !ERROR: Pointer 'a' has rank 2 but the extent of bounds array is 1
   a(1 : [6]) => x
 
   !ERROR: POINTER-ASSIGNMENT lower bounds rank-1 expression must have known constant extent

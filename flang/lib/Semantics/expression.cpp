@@ -3941,6 +3941,7 @@ const Assignment *ExpressionAnalyzer::Analyze(
                       std::get<parser::BoundsRemappingBoundsSpec>(listOrBounds.u)};
                   if (auto result{checkBoundsRemappingBoundsSpec(*this, boundsRemappingBounds)}) {
                     bounds = std::move(*result);
+                    assignment.boundsFromRankOneExpr = true;
                   }
                 } else {
                   const auto &list{
