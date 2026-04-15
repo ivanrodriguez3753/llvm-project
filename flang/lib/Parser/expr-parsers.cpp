@@ -442,10 +442,15 @@ TYPE_CONTEXT_PARSER("assignment statement"_en_US,
 // and proc-target.
 TYPE_CONTEXT_PARSER("pointer assignment statement"_en_US,
     construct<PointerAssignmentStmt>(dataRef,
-        parenthesized(nonemptyList(Parser<BoundsRemapping>{})), "=>" >> expr) ||
-        construct<PointerAssignmentStmt>(dataRef,
-            defaulted(parenthesized(nonemptyList(Parser<BoundsSpec>{}))),
-            "=>" >> expr))
+        construct<PointerAssignmentStmt::Bounds>(
+            construct<PointerAssignmentStmt::BoundsRemappingListOrBounds>(
+                parenthesized(nonemptyList(Parser<BoundsRemapping>{})))),
+        "=>" >> expr) ||
+    construct<PointerAssignmentStmt>(dataRef,
+        construct<PointerAssignmentStmt::Bounds>(
+            construct<PointerAssignmentStmt::BoundsSpecListOrBounds>(
+                defaulted(parenthesized(nonemptyList(Parser<BoundsSpec>{}))))),
+        "=>" >> expr))
 
 // R1035 bounds-spec -> lower-bound-expr :
 TYPE_PARSER(construct<BoundsSpec>(boundExpr / ":"))
