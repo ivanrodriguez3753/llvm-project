@@ -889,6 +889,7 @@ public:
   Expr<SomeType> lhs;
   Expr<SomeType> rhs;
   std::variant<Intrinsic, ProcedureRef, BoundsSpec, BoundsRemapping> u;
+  bool boundsFromRankOneExpr{false};
 };
 
 // This wrapper class is used, by means of a forward reference with
