@@ -3727,27 +3727,9 @@ struct RankOneArrayElementSubstituter {
 
 static std::optional<Assignment::BoundsSpec>
 ExtractBoundsFromConstantExtentRankOne(
-    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr) {
+    ExpressionAnalyzer &analyzer, Expr<SomeType> &&expr, std::int64_t n) {
   auto folded{
       evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(expr))};
-
-  auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
-  auto nExpr{
-      shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
-  if (!nExpr) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
-    return std::nullopt;
-  }
-  
-  auto nFolded{
-      evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
-  auto n{evaluate::ToInt64(nFolded)};
-  if (!n || *n < 0) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression must have known constant extent"_err_en_US);
-    return std::nullopt;
-  }
 
   std::vector<semantics::SymbolRef> rankOneSymbols;
   std::set<const Symbol *> seenRankOneUltimate;
@@ -3764,16 +3746,11 @@ ExtractBoundsFromConstantExtentRankOne(
 
   const semantics::SomeIntExpr *someInt{
       evaluate::UnwrapExpr<semantics::SomeIntExpr>(folded)};
-  if (!someInt) {
-    analyzer.Say(
-        "Pointer lower-bounds rank-1 expression is not INTEGER"_err_en_US);
-    return std::nullopt;
-  }
 
   Assignment::BoundsSpec bounds;
-  bounds.reserve(static_cast<std::size_t>(*n));
+  bounds.reserve(static_cast<std::size_t>(n));
 
-  for (std::int64_t k{0}; k < *n; ++k) {
+  for (std::int64_t k{0}; k < n; ++k) {
     std::vector<RankOneSubscript> elementSubscripts;
     elementSubscripts.reserve(rankOneSymbols.size());
 
@@ -3803,12 +3780,6 @@ ExtractBoundsFromConstantExtentRankOne(
         },
         someInt->u);
 
-    if (!elementBound || elementBound->Rank() != 0) {
-      analyzer.Say(
-          "Pointer lower-bounds rank-1 expression could not be scalarized"_err_en_US);
-      return std::nullopt;
-    }
-
     bounds.emplace_back(std::move(*elementBound));
   }
 
@@ -3816,8 +3787,134 @@ ExtractBoundsFromConstantExtentRankOne(
 }
 
 MaybeExpr ExpressionAnalyzer::Analyze(const parser::BoundsRemappingBoundsSpec &) {
-  printf("Called Analyze(const parser::BoundsRemappingBoundsSpec &)\n");
   return std::nullopt;
+}
+
+static std::optional<std::int64_t> GetRankOneConstantExtent(
+    ExpressionAnalyzer &analyzer, const Expr<SomeType> &expr) {
+  auto folded{evaluate::Fold(analyzer.GetFoldingContext(), common::Clone(expr))};
+  auto shape{evaluate::GetShape(analyzer.GetFoldingContext(), folded)};
+  auto nExpr{shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+  if (!nExpr) {
+    return std::nullopt;
+  }
+  auto nFolded{evaluate::Fold(analyzer.GetFoldingContext(), std::move(*nExpr))};
+  auto n{evaluate::ToInt64(nFolded)};
+  if (!n || *n < 0) {
+    return std::nullopt;
+  }
+  return n;
+}
+
+static std::optional<Assignment::BoundsRemapping> checkBoundsRemappingBoundsSpec(
+    ExpressionAnalyzer &analyzer, const parser::BoundsRemappingBoundsSpec &x) {
+  const auto &lowerIntExpr{std::get<0>(x.t)};
+  const auto &upperIntExpr{std::get<1>(x.t)};
+
+  MaybeExpr rawLower{analyzer.Analyze(lowerIntExpr)};
+  MaybeExpr rawUpper{analyzer.Analyze(upperIntExpr)};
+  if (!rawLower || !rawUpper) {
+    return std::nullopt;
+  }
+
+  Assignment::BoundsRemapping bounds;
+
+  if (rawLower->Rank() > 0 && rawUpper->Rank() > 0) {
+    bool rankError{false}, nonConstSizeError{false};
+    if(rawLower->Rank() > 1) {
+      analyzer.Say(parser::FindSourceLocation(lowerIntExpr),
+          "Integer array used as lower bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-%d"_err_en_US,
+          rawLower->Rank());
+      rankError = true;
+    }
+    if(rawUpper->Rank() > 1) {
+      analyzer.Say(parser::FindSourceLocation(upperIntExpr),
+          "Integer array used as upper bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-%d"_err_en_US,
+          rawUpper->Rank());
+      rankError = true;
+    }
+    
+    auto nLower{GetRankOneConstantExtent(analyzer, *rawLower)};
+    auto nUpper{GetRankOneConstantExtent(analyzer, *rawUpper)};
+    if (!nLower) {
+      analyzer.Say(parser::FindSourceLocation(lowerIntExpr),
+          "POINTER-ASSIGNMENT lower bounds rank-1 expression must have known constant extent"_err_en_US);
+      nonConstSizeError = true;
+    }
+    if (!nUpper) {
+      analyzer.Say(parser::FindSourceLocation(upperIntExpr),
+          "POINTER-ASSIGNMENT upper bounds rank-1 expression must have known constant extent"_err_en_US);
+      nonConstSizeError = true;
+    }
+    if(rankError || nonConstSizeError) {
+      return std::nullopt;
+    } 
+    auto extractedLower{ExtractBoundsFromConstantExtentRankOne(
+        analyzer, std::move(*rawLower), *nLower)};
+    auto extractedUpper{ExtractBoundsFromConstantExtentRankOne(
+        analyzer, std::move(*rawUpper), *nUpper)};
+    if (extractedLower && extractedUpper) {
+      if (extractedLower->size() == extractedUpper->size()) {
+        for (std::size_t i{0}; i < extractedLower->size(); ++i) {
+          bounds.emplace_back(std::move((*extractedLower)[i]),
+              std::move((*extractedUpper)[i]));
+        }
+      } else {
+        analyzer.Say(
+            parser::FindSourceLocation(x),
+            "POINTER-ASSIGNMENT bounds integer rank-1 arrays must have the same "
+            "size; lower bounds has %d elements, upper bounds has %d elements"_err_en_US,
+            extractedLower->size(),
+            extractedUpper->size());
+        return std::nullopt;
+      }
+    }
+  } else {
+    // One scalar, one rank-1 — broadcast the scalar
+    bool lowerIsScalar{rawLower->Rank() == 0};
+    MaybeExpr &rawArray{lowerIsScalar ? rawUpper : rawLower};
+    MaybeExpr &rawScalar{lowerIsScalar ? rawLower : rawUpper};
+    bool rankError{false}, nonConstSizeError{false};
+    if(rawArray->Rank() > 1) {
+      analyzer.Say(parser::FindSourceLocation(lowerIsScalar ? upperIntExpr : lowerIntExpr),
+          "Integer array used as %s bounds in POINTER-ASSIGNMENT must be rank-1 but is rank-%d"_err_en_US,
+          lowerIsScalar ? "upper" : "lower",
+          rawArray->Rank());
+      rankError = true;
+    }
+
+    auto nArray{GetRankOneConstantExtent(analyzer, *rawArray)};
+    if (!nArray) {
+      analyzer.Say(parser::FindSourceLocation(lowerIsScalar ? upperIntExpr : lowerIntExpr),
+          "POINTER-ASSIGNMENT %s bounds rank-1 expression must have known constant extent"_err_en_US,
+          lowerIsScalar ? "upper" : "lower");
+      nonConstSizeError = true;
+    }
+    if(rankError || nonConstSizeError) {
+      return std::nullopt;
+    } 
+    auto extractedArray{ExtractBoundsFromConstantExtentRankOne(
+        analyzer, std::move(*rawArray), *nArray)};
+    auto *intExpr{std::get_if<Expr<SomeInteger>>(&rawScalar->u)};
+    if (!intExpr) {
+      return std::nullopt;
+    }
+    Expr<SubscriptInteger> scalarSub{
+        Convert<SubscriptInteger, TypeCategory::Integer>{std::move(*intExpr)}};
+    if (extractedArray) {
+      auto foldedScalar{evaluate::Fold(analyzer.GetFoldingContext(), std::move(scalarSub))};
+      for (std::size_t i{0}; i < extractedArray->size(); ++i) {
+        if (lowerIsScalar) {
+          bounds.emplace_back(
+              common::Clone(foldedScalar), std::move((*extractedArray)[i]));
+        } else {
+          bounds.emplace_back(
+              std::move((*extractedArray)[i]), common::Clone(foldedScalar));
+        }
+      }
+    }
+  }
+  return bounds;
 }
 
 const Assignment *ExpressionAnalyzer::Analyze(
@@ -3842,65 +3939,8 @@ const Assignment *ExpressionAnalyzer::Analyze(
                   rewriteBoundsRemappingListToBounds(listOrBounds);
                   const auto &boundsRemappingBounds{
                       std::get<parser::BoundsRemappingBoundsSpec>(listOrBounds.u)};
-
-                  const auto &lowerIntExpr{std::get<0>(boundsRemappingBounds.t)};
-                  const auto &upperIntExpr{std::get<1>(boundsRemappingBounds.t)};
-
-                  // Analyze raw expressions first (before AsSubscript inserts int(...,kind=8)).
-                  MaybeExpr rawLower{Analyze(lowerIntExpr)};
-                  MaybeExpr rawUpper{Analyze(upperIntExpr)};
-
-                  if (rawLower && rawUpper) {
-                    if (rawLower->Rank() == 0 && rawUpper->Rank() == 0) {
-                      // Both are scalar — single remapping pair.
-                      auto lower{AsSubscript(std::move(rawLower))};
-                      auto upper{AsSubscript(std::move(rawUpper))};
-                      if (lower && upper) {
-                        bounds.emplace_back(
-                            Fold(std::move(*lower)), Fold(std::move(*upper)));
-                      }
-                    } else if (rawLower->Rank() > 0 && rawUpper->Rank() > 0) {
-                      // Both are rank-1 arrays — extract element-wise pairs.
-                      auto extractedLower{ExtractBoundsFromConstantExtentRankOne(
-                          *this, std::move(*rawLower))};
-                      auto extractedUpper{ExtractBoundsFromConstantExtentRankOne(
-                          *this, std::move(*rawUpper))};
-                      if (extractedLower && extractedUpper) {
-                        if (extractedLower->size() == extractedUpper->size()) {
-                          for (std::size_t i{0}; i < extractedLower->size(); ++i) {
-                            bounds.emplace_back(std::move((*extractedLower)[i]),
-                                std::move((*extractedUpper)[i]));
-                          }
-                        } else {
-                          Say("Pointer bounds-remapping lower and upper rank-1 expressions must have the same extent"_err_en_US);
-                        }
-                      }
-                    } else {
-                      // One is scalar, one is rank-1 — broadcast the scalar
-                      // to match the extent of the array.
-                      bool lowerIsScalar{rawLower->Rank() == 0};
-                      MaybeExpr &rawArray{lowerIsScalar ? rawUpper : rawLower};
-                      MaybeExpr &rawScalar{lowerIsScalar ? rawLower : rawUpper};
-
-                      auto extractedArray{ExtractBoundsFromConstantExtentRankOne(
-                          *this, std::move(*rawArray))};
-                      auto scalarSub{AsSubscript(std::move(rawScalar))};
-
-                      if (extractedArray && scalarSub) {
-                        auto foldedScalar{Fold(std::move(*scalarSub))};
-                        for (std::size_t i{0}; i < extractedArray->size(); ++i) {
-                          if (lowerIsScalar) {
-                            bounds.emplace_back(
-                                common::Clone(foldedScalar),
-                                std::move((*extractedArray)[i]));
-                          } else {
-                            bounds.emplace_back(
-                                std::move((*extractedArray)[i]),
-                                common::Clone(foldedScalar));
-                          }
-                        }
-                      }
-                    }
+                  if (auto result{checkBoundsRemappingBoundsSpec(*this, boundsRemappingBounds)}) {
+                    bounds = std::move(*result);
                   }
                 } else {
                   const auto &list{
