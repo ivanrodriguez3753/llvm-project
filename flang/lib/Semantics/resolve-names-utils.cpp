@@ -241,8 +241,8 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::ComponentArraySpec &x) {
 
 static bool shouldRewriteShapeSpecListToExplicitBounds(
     SemanticsContext &context, const parser::ArraySpec &x) {
-  auto &explicitShapeSpecList{std::get<std::list<parser::ExplicitShapeSpec>>(
-      const_cast<parser::ArraySpec &>(x).u)};
+  auto &explicitShapeSpecList{
+      std::get<std::list<parser::ExplicitShapeSpec>>(x.u)};
 
   if (explicitShapeSpecList.size() != 1) {
     return false;
@@ -255,7 +255,7 @@ static bool shouldRewriteShapeSpecListToExplicitBounds(
   bool foundArray{false};
 
   if (MaybeExpr analyzedExpr =
-          AnalyzeExpr(context, upperBound.v.thing.thing.value());
+          AnalyzeExpr(context, parser::UnwrapRef<parser::Expr>(upperBound));
       analyzedExpr && (analyzedExpr->Rank() > 0)) {
     foundArray = true;
   }
@@ -263,7 +263,7 @@ static bool shouldRewriteShapeSpecListToExplicitBounds(
   if (lowerBoundOpt) {
     const auto &lowerBound{*lowerBoundOpt};
     if (MaybeExpr analyzedExpr =
-            AnalyzeExpr(context, lowerBound.v.thing.thing.value());
+            AnalyzeExpr(context, parser::UnwrapRef<parser::Expr>(lowerBound));
         analyzedExpr && (analyzedExpr->Rank() > 0)) {
       foundArray = true;
     }

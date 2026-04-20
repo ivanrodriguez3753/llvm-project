@@ -1329,11 +1329,9 @@ EMPTY_CLASS(AssumedRankSpec);
 //        assumed-size-spec | implied-shape-spec |
 //        implied-shape-or-assumed-size-spec | assumed-rank-spec
 
-using ExplicitBoundsExpr = IntExpr;
-
 struct ExplicitShapeBoundsSpec {
   TUPLE_CLASS_BOILERPLATE(ExplicitShapeBoundsSpec);
-  std::tuple<std::optional<ExplicitBoundsExpr>, ExplicitBoundsExpr> t;
+  std::tuple<std::optional<IntExpr>, IntExpr> t;
 };
 
 struct ArraySpec {
