@@ -22,6 +22,7 @@
 #include "flang/Support/Fortran.h"
 #include <initializer_list>
 #include <variant>
+#include "flang/Evaluate/rewrite.h"
 
 namespace Fortran::semantics {
 
@@ -184,6 +185,156 @@ static GenericKind MapIntrinsicOperator(IntrinsicOperator op) {
   }
 }
 
+// Extract the k-th scalar element (0-based) from a rank-1 vector subscript.
+static std::optional<evaluate::Expr<evaluate::SubscriptInteger>>
+extractVectorElement(evaluate::FoldingContext &context,
+    const evaluate::Expr<evaluate::SubscriptInteger> &vecExpr,
+    std::int64_t k) {
+  auto folded{evaluate::Fold(context, common::Clone(vecExpr))};
+
+  // Constant vector (handles literal [2,1] and PARAMETER values)
+  if (const auto *constVec{evaluate::UnwrapExpr<
+          evaluate::Constant<evaluate::SubscriptInteger>>(folded)}) {
+    if (k >= 0 && static_cast<std::size_t>(k) < constVec->values().size()) {
+      return evaluate::Expr<evaluate::SubscriptInteger>{
+          evaluate::Constant<evaluate::SubscriptInteger>{
+              constVec->values()[k]}};
+    }
+    return std::nullopt;
+  }
+
+  // ArrayConstructor<SubscriptInteger> with scalar elements
+  if (const auto *ctor{evaluate::UnwrapExpr<
+          evaluate::ArrayConstructor<evaluate::SubscriptInteger>>(folded)}) {
+    std::int64_t i{0};
+    for (const auto &value : *ctor) {
+      if (i == k) {
+        if (const auto *elem{std::get_if<
+                evaluate::Expr<evaluate::SubscriptInteger>>(&value.u)}) {
+          if (elem->Rank() == 0) {
+            return common::Clone(*elem);
+          }
+        }
+        return std::nullopt;
+      }
+      ++i;
+    }
+    return std::nullopt;
+  }
+
+  // Convert<SubscriptInteger, Integer>{ArrayConstructor<OtherKind>{...}}
+  // Handles bounds([two, one]) where two/one are default-kind (kind-4)
+  // variables: the vector subscript is Convert<Int8>{ArrayConstructor<Int4>{...}}
+  using ConvertFromInt =
+      evaluate::Convert<evaluate::SubscriptInteger, TypeCategory::Integer>;
+  if (const auto *conv{std::get_if<ConvertFromInt>(&folded.u)}) {
+    const SomeIntExpr &inner{conv->left()};
+    std::optional<evaluate::Expr<evaluate::SubscriptInteger>> result;
+    common::visit(
+        [&](const auto &kindExpr) {
+          using K = std::decay_t<decltype(kindExpr)>;
+          using R = typename K::Result;
+          if (const auto *ctor{evaluate::UnwrapExpr<
+                  evaluate::ArrayConstructor<R>>(kindExpr)}) {
+            std::int64_t i{0};
+            for (const auto &value : *ctor) {
+              if (i == k) {
+                if (const auto *elem{
+                        std::get_if<evaluate::Expr<R>>(&value.u)}) {
+                  if (elem->Rank() == 0) {
+                    result = evaluate::Fold(context,
+                        evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                            SomeIntExpr{common::Clone(*elem)}));
+                  }
+                }
+                return;
+              }
+              ++i;
+            }
+          }
+        },
+        inner.u);
+    return result;
+  }
+
+  return std::nullopt;
+}
+
+struct RankOneArrayElementSubstituter {
+  std::int64_t k;  // element index (0-based)
+  const std::vector<const Symbol *> &symbols;
+  evaluate::FoldingContext &context;
+
+  template <typename T, typename U>
+  evaluate::Expr<T> operator()(evaluate::Expr<T> &&x, const U &) const {
+    return std::move(x);
+  }
+
+  template <typename T>
+  evaluate::Expr<T> operator()(
+      evaluate::Expr<T> &&x,
+      const evaluate::Designator<T> &designator) const {
+    if (designator.Rank() != 1) return std::move(x);
+    const Symbol *last{designator.GetLastSymbol()};
+    if (!last) return std::move(x);
+    bool found{false};
+    for (const Symbol *sym : symbols) {
+      if (last == sym) { found = true; break; }
+    }
+    if (!found) return std::move(x);
+
+    // Section? (ArrayRef with a Triplet subscript)
+    if (const auto *arrayRef{
+            std::get_if<evaluate::ArrayRef>(&designator.u)}) {
+      if (arrayRef->size() == 1) {
+        if (const auto *triplet{std::get_if<evaluate::Triplet>(
+                &arrayRef->at(0).u)}) {
+          // idx = start + k * stride
+          auto stride{triplet->stride()};
+          evaluate::ExtentExpr kExpr{static_cast<common::ConstantSubscript>(k)};
+          auto lower{triplet->lower()};
+          auto start{lower
+              ? std::move(*lower)
+              : evaluate::GetRawLowerBound(
+                    context, common::Clone(arrayRef->base()), 0)};
+          auto idx{evaluate::Fold(context,
+              std::move(start) + common::Clone(stride) * std::move(kExpr))};
+          std::vector<evaluate::Subscript> subs;
+          subs.emplace_back(std::move(idx));
+          return evaluate::Expr<T>{evaluate::Designator<T>{evaluate::DataRef{
+              evaluate::ArrayRef{
+                  common::Clone(arrayRef->base()), std::move(subs)}}}};
+        }
+        // Vector subscript: extract k-th element from subscript expression
+        const auto *indirect{std::get_if<
+            evaluate::IndirectSubscriptIntegerExpr>(&arrayRef->at(0).u)};
+        if (indirect && indirect->value().Rank() >= 1) {
+          if (auto scalarSub{extractVectorElement(
+                  context, indirect->value(), k)}) {
+            std::vector<evaluate::Subscript> subs;
+            subs.emplace_back(std::move(*scalarSub));
+            return evaluate::Expr<T>{evaluate::Designator<T>{
+                evaluate::DataRef{evaluate::ArrayRef{
+                    common::Clone(arrayRef->base()), std::move(subs)}}}};
+          }
+        }
+      }
+      return std::move(x); // unhandled subscript pattern
+    }
+
+    // Whole array (SymbolRef or Component)
+    evaluate::NamedEntity base{*last};
+    auto lb0{evaluate::GetRawLowerBound(context, base, 0)};
+    auto idx{evaluate::Fold(context,
+        std::move(lb0) +
+            evaluate::ExtentExpr{static_cast<common::ConstantSubscript>(k)})};
+    std::vector<evaluate::Subscript> subs;
+    subs.emplace_back(SubscriptIntExpr{std::move(idx)});
+    return evaluate::Expr<T>{evaluate::Designator<T>{
+        evaluate::DataRef{evaluate::ArrayRef{*last, std::move(subs)}}}};
+  }
+};
+
 class ArraySpecAnalyzer {
 public:
   ArraySpecAnalyzer(SemanticsContext &context) : context_{context} {}
@@ -213,6 +364,7 @@ private:
   void MakeDeferred(int);
   Bound GetBound(const std::optional<parser::SpecificationExpr> &);
   Bound GetBound(const parser::SpecificationExpr &);
+  std::optional<std::pair<std::vector<Bound>, std::vector<Bound>>> checkExplicitShapeBoundsSpec(const parser::ExplicitShapeBoundsSpec &x);
 };
 
 ArraySpec AnalyzeArraySpec(
@@ -341,11 +493,272 @@ void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeSpec &x) {
       std::get<parser::SpecificationExpr>(x.t));
 }
 
+std::optional<std::pair<std::vector<Bound>, std::vector<Bound>>>
+ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
+    const parser::ExplicitShapeBoundsSpec &x) {
+  const auto &lowerBoundOpt{std::get<0>(x.t)};
+  const auto &upperBound{std::get<1>(x.t)};
+
+  auto scalarExprToBound = [&](const SomeExpr &expr) -> std::optional<Bound> {
+    if (const auto *intExpr{evaluate::UnwrapExpr<SomeIntExpr>(expr)}) {
+      auto subscript{evaluate::Fold(context_.foldingContext(),
+          evaluate::ConvertToType<evaluate::SubscriptInteger>(
+              common::Clone(*intExpr)))};
+      return Bound{MaybeSubscriptIntExpr{std::move(subscript)}};
+    }
+    return std::nullopt;
+  };
+
+  auto extractValues =
+      [&](const SomeExpr &folded) -> std::vector<std::int64_t> {
+    std::vector<std::int64_t> values;
+    if (auto scalar{evaluate::ToInt64(folded)}) {
+      values.push_back(*scalar);
+    } else if (const auto *someInt{
+                   evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
+      common::visit(
+          [&](const auto &kindExpr) {
+            using T = std::decay_t<decltype(kindExpr)>;
+            if (const auto *constArray{
+                    evaluate::UnwrapExpr<
+                        evaluate::Constant<typename T::Result>>(kindExpr)}) {
+              for (auto it{constArray->values().begin()};
+                   it != constArray->values().end(); ++it) {
+                values.push_back(it->ToInt64());
+              }
+            }
+          },
+          someInt->u);
+    }
+    return values;
+  };
+
+  auto collectBounds = [&](const SomeExpr &folded) -> std::vector<Bound> {
+    std::vector<Bound> bounds;
+
+    if (folded.Rank() == 0) {
+      if (auto scalar{scalarExprToBound(folded)}) {
+        bounds.push_back(std::move(*scalar));
+      }
+      return bounds;
+    }
+    if (folded.Rank() != 1) {
+      return bounds;
+    }
+
+    // A) Named rank-1 array expr -> build base(lb0+k)
+    if (auto base{evaluate::ExtractNamedEntity(folded)}) {
+      auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
+      auto nExpr{
+          shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+      auto nFolded{
+          nExpr ? evaluate::Fold(context_.foldingContext(), std::move(*nExpr))
+                : evaluate::ExtentExpr{0}};
+      auto n{evaluate::ToInt64(nFolded)};
+      if (n && *n > 0) {
+        auto lb0{
+            evaluate::GetRawLowerBound(context_.foldingContext(), *base, 0)};
+        bounds.reserve(static_cast<std::size_t>(*n));
+        for (std::int64_t k{0}; k < *n; ++k) {
+          auto idx{evaluate::Fold(context_.foldingContext(),
+              common::Clone(lb0) +
+                  evaluate::ExtentExpr{
+                      static_cast<common::ConstantSubscript>(k)})};
+          std::vector<evaluate::Subscript> subscripts;
+          subscripts.emplace_back(SubscriptIntExpr{std::move(idx)});
+          auto elem{evaluate::AsGenericExpr(evaluate::DataRef{
+              evaluate::ArrayRef{
+                  common::Clone(*base), std::move(subscripts)}})};
+          auto b{elem ? scalarExprToBound(*elem) : std::nullopt};
+          if (!b) {
+            bounds.clear();
+            break;
+          }
+          bounds.push_back(std::move(*b));
+        }
+      }
+    }
+
+    // B) Non-constant rank-1 array constructor: [a,b,...]
+    if (bounds.empty()) {
+      if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
+        bool ok{true};
+        common::visit(
+            [&](const auto &kindExpr) {
+              using K = std::decay_t<decltype(kindExpr)>;
+              using R = typename K::Result;
+              if (const auto *ctor{evaluate::UnwrapExpr<
+                      evaluate::ArrayConstructor<R>>(kindExpr)}) {
+                for (const auto &value : *ctor) {
+                  const auto *elem{
+                      std::get_if<evaluate::Expr<R>>(&value.u)};
+                  if (!elem || elem->Rank() != 0) {
+                    ok = false;
+                    return;
+                  }
+                  SomeIntExpr one{common::Clone(*elem)};
+                  auto sub{evaluate::Fold(context_.foldingContext(),
+                      evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                          std::move(one)))};
+                  bounds.emplace_back(
+                      Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+                }
+              }
+            },
+            someInt->u);
+        if (!ok) {
+          bounds.clear();
+        }
+      }
+    }
+
+    // C) Constant rank-1 expression
+    if (bounds.empty()) {
+      auto values{extractValues(folded)};
+      bounds.reserve(values.size());
+      for (auto value : values) {
+        bounds.emplace_back(static_cast<common::ConstantSubscript>(value));
+      }
+    }
+
+    // D) General rank-1 expression over named arrays
+    if (bounds.empty()) {
+      auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
+      auto nExpr{
+          shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+      if (nExpr) {
+        auto nFolded{
+            evaluate::Fold(context_.foldingContext(), std::move(*nExpr))};
+        auto n{evaluate::ToInt64(nFolded)};
+        if (n && *n > 0) {
+          std::vector<const Symbol *> rankOneSymbols;
+          for (const SymbolRef &ref : evaluate::CollectSymbols(folded)) {
+            const Symbol &symbol{ref.get()};
+            if (const ArraySpec *arrayShape{symbol.GetShape()};
+                arrayShape && arrayShape->Rank() == 1) {
+              rankOneSymbols.push_back(&symbol);
+            }
+          }
+          if (!rankOneSymbols.empty()) {
+            if (const auto *someInt{
+                    evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
+              bounds.reserve(static_cast<std::size_t>(*n));
+              bool ok{true};
+              for (std::int64_t k{0}; k < *n && ok; ++k) {
+                RankOneArrayElementSubstituter rewriter{k, rankOneSymbols,
+                    context_.foldingContext()};
+                std::optional<Bound> elementBound;
+                common::visit(
+                    [&](const auto &kindExpr) {
+                      auto scalarized{
+                          evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+                      SomeIntExpr one{std::move(scalarized)};
+                      auto sub{evaluate::Fold(context_.foldingContext(),
+                          evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                              std::move(one)))};
+                      elementBound.emplace(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+                    },
+                    someInt->u);
+                if (elementBound) {
+                  bounds.push_back(std::move(*elementBound));
+                } else {
+                  bounds.clear();
+                  ok = false;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return bounds;
+  };
+
+  // Helper to analyze, validate, fold, and collect bounds for one expression.
+  // Returns empty vector on error; sets hasError.
+  bool hasError{false};
+  auto analyzeBound = [&](const auto &parseBound, bool isUpper)
+      -> std::vector<Bound> {
+    MaybeExpr expr{AnalyzeExpr(context_, parseBound.thing)};
+    if (!expr) {
+      hasError = true;
+      return {};
+    }
+    if (expr->Rank() > 1) {
+      parser::CharBlock at{parser::FindSourceLocation(parseBound)};
+      context_.Say(at,
+          "Integer array used as %s bounds in DECLARATION must be rank-1 "
+          "but is rank-%d"_err_en_US,
+          isUpper ? "upper" : "lower", expr->Rank());
+      hasError = true;
+      return {};
+    }
+    if (expr->Rank() == 1) {
+      if (auto shape{evaluate::GetShape(context_.foldingContext(), *expr)};
+          !shape || shape->size() != 1 || !(*shape)[0] ||
+          !evaluate::ToInt64(*(*shape)[0])) {
+        context_.Say(parser::FindSourceLocation(parseBound),
+            "Rank-1 integer array used as %s bounds in DECLARATION must "
+            "have constant size"_err_en_US,
+            isUpper ? "upper" : "lower");
+        hasError = true;
+        return {};
+      }
+    }
+    auto folded{evaluate::Fold(context_.foldingContext(), std::move(*expr))};
+    auto bounds{collectBounds(folded)};
+    if (bounds.empty()) {
+      hasError = true;
+    }
+    return bounds;
+  };
+
+  // Upper bound (required)
+  std::vector<Bound> ubounds{analyzeBound(upperBound, /*isUpper=*/true)};
+
+  // Lower bound (optional) — always check even if upper failed
+  std::vector<Bound> lbounds;
+  if (lowerBoundOpt) {
+    lbounds = analyzeBound(*lowerBoundOpt, /*isUpper=*/false);
+  }
+
+  // Size mismatch check (only meaningful if both succeeded)
+  if (!hasError && !lbounds.empty() && ubounds.size() != 1 &&
+      lbounds.size() != 1 && ubounds.size() != lbounds.size()) {
+    parser::CharBlock at{parser::FindSourceLocation(x)};
+    context_.Say(at,
+        "DECLARATION bounds integer rank-1 arrays must have the same size; "
+        "lower bounds has %jd elements, upper bounds has %jd elements"_err_en_US,
+        lbounds.size(), ubounds.size());
+    hasError = true;
+  }
+
+  if (hasError) {
+    return std::nullopt;
+  }
+
+  return std::make_pair(std::move(ubounds), std::move(lbounds));
+}
+
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
-  context_.Say("TODO: Analyze overload for ExplicitShapeBoundsSpec"_err_en_US);
-  // prevent CHECK abort in Analyze(ArraySpec), otherwise it'll abort before
-  // printing error message
-  arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
+  auto result{checkExplicitShapeBoundsSpec(x)};
+  if (!result) {
+    arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
+    return;
+  }
+  auto &[ubounds, lbounds]{*result};
+  std::size_t numDims{std::max(ubounds.size(), lbounds.size())};
+  for (std::size_t i{0}; i < numDims; ++i) {
+    Bound lb{1};
+    if (!lbounds.empty()) {
+      std::size_t lbIdx{lbounds.size() == 1 ? 0 : i};
+      lb = lbounds[lbIdx];
+    }
+    std::size_t ubIdx{ubounds.size() == 1 ? 0 : i};
+    Bound ub{ubounds[ubIdx]};
+    arraySpec_.push_back(ShapeSpec::MakeExplicit(std::move(lb), std::move(ub)));
+  }
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::AssumedImpliedSpec &x) {
