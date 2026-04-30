@@ -546,39 +546,6 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
       return bounds;
     }
 
-    // A) Named rank-1 array expr -> build base(lb0+k)
-    if (auto base{evaluate::ExtractNamedEntity(folded)}) {
-      auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
-      auto nExpr{
-          shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
-      auto nFolded{
-          nExpr ? evaluate::Fold(context_.foldingContext(), std::move(*nExpr))
-                : evaluate::ExtentExpr{0}};
-      auto n{evaluate::ToInt64(nFolded)};
-      if (n && *n > 0) {
-        auto lb0{
-            evaluate::GetRawLowerBound(context_.foldingContext(), *base, 0)};
-        bounds.reserve(static_cast<std::size_t>(*n));
-        for (std::int64_t k{0}; k < *n; ++k) {
-          auto idx{evaluate::Fold(context_.foldingContext(),
-              common::Clone(lb0) +
-                  evaluate::ExtentExpr{
-                      static_cast<common::ConstantSubscript>(k)})};
-          std::vector<evaluate::Subscript> subscripts;
-          subscripts.emplace_back(SubscriptIntExpr{std::move(idx)});
-          auto elem{evaluate::AsGenericExpr(evaluate::DataRef{
-              evaluate::ArrayRef{
-                  common::Clone(*base), std::move(subscripts)}})};
-          auto b{elem ? scalarExprToBound(*elem) : std::nullopt};
-          if (!b) {
-            bounds.clear();
-            break;
-          }
-          bounds.push_back(std::move(*b));
-        }
-      }
-    }
-
     // B) Non-constant rank-1 array constructor: [a,b,...]
     if (bounds.empty()) {
       if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
@@ -677,14 +644,10 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
 
   // Helper to analyze, validate, fold, and collect bounds for one expression.
   // Returns empty vector on error; sets hasError.
-  bool hasError{false};
+  bool hasError{false}, scalarPresent{false};
   auto analyzeBound = [&](const auto &parseBound, bool isUpper)
       -> std::vector<Bound> {
     MaybeExpr expr{AnalyzeExpr(context_, parseBound.thing)};
-    if (!expr) {
-      hasError = true;
-      return {};
-    }
     if (expr->Rank() > 1) {
       parser::CharBlock at{parser::FindSourceLocation(parseBound)};
       context_.Say(at,
@@ -705,6 +668,8 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
         hasError = true;
         return {};
       }
+    } else {
+      scalarPresent = true;
     }
     auto folded{evaluate::Fold(context_.foldingContext(), std::move(*expr))};
     auto bounds{collectBounds(folded)};
@@ -723,9 +688,8 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
     lbounds = analyzeBound(*lowerBoundOpt, /*isUpper=*/false);
   }
 
-  // Size mismatch check (only meaningful if both succeeded)
-  if (!hasError && !lbounds.empty() && ubounds.size() != 1 &&
-      lbounds.size() != 1 && ubounds.size() != lbounds.size()) {
+  // Size mismatch check (only meaningful if both are arrays)
+  if (!hasError && !lbounds.empty() && !scalarPresent && ubounds.size() != lbounds.size()) {
     parser::CharBlock at{parser::FindSourceLocation(x)};
     context_.Say(at,
         "DECLARATION bounds integer rank-1 arrays must have the same size; "

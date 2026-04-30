@@ -76,6 +76,21 @@ program declaration_array_bounds
   integer :: h([1.2,2.2,3.2]:[1,2,3])
   !ERROR: DECLARATION bounds integer rank-1 arrays must have the same size; lower bounds has 3 elements, upper bounds has 2 elements
   integer :: i([1,2,3]:[3,3])
+  !Previously uncaught bug: array of size 1 is being treated as a scalar, and broadcast. This is incorrect.
+  !It should be treated as a size mismatch error like the one above.
+  !ERROR: DECLARATION bounds integer rank-1 arrays must have the same size; lower bounds has 1 elements, upper bounds has 2 elements
+  integer :: ii([1] : [1,2]) 
+  !Test same behavior with vector subscripts
+  !ERROR: DECLARATION bounds integer rank-1 arrays must have the same size; lower bounds has 1 elements, upper bounds has 2 elements
+  integer :: abc(rank1_array([scalar]) : rank1_array([scalar, scalar]))
+  !Test same behavior with array slices
+  !ERROR: DECLARATION bounds integer rank-1 arrays must have the same size; lower bounds has 2 elements, upper bounds has 1 elements
+  integer :: abcd(rank1_array(1:3:2) : rank1_array(1:1))
+  ! using a nonconst upper bound or stride for array slices makes the size nonconst. Should error
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: abcde(rank1_parameter_array(1:scalar:1))
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: abcdef(rank1_parameter_array(1:scalar:1))
 
   ! Test error for rank > 1, fulfilling constness
   integer, parameter :: rank2_parameter_array(2,2) = reshape([[1,2],[3,4]], [2,2])
