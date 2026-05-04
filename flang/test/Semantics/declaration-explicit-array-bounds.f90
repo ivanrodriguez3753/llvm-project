@@ -27,6 +27,18 @@ subroutine sub_use_consumer()
   arr_upper = 1
   arr_both = 2
 end subroutine
+subroutine bar(n, bounds, rank_bounds)
+  integer, intent(IN) :: n 
+  integer, intent(IN) :: bounds(:)
+  integer, intent(IN) :: rank_bounds(..)
+  integer :: bounds2(n)
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: arr(bounds)
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: arr2(bounds2)
+  !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
+  integer :: arr3(rank_bounds)
+end subroutine
 
 module data 
   integer :: rank1_array_module(3) = [5, 5, 5]
@@ -60,6 +72,9 @@ program declaration_array_bounds
   integer :: g(rank1_parameter_array)
   integer :: ggg(rank1_parameter_array * 2 : rank1_parameter_array - 1)
 
+  integer :: int 
+  integer :: ff([[int, int]])
+
 
   ! Negative cases (erros expected)
   integer :: rank1_array(3) = [5,5,5]
@@ -90,7 +105,7 @@ program declaration_array_bounds
   !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
   integer :: abcde(rank1_parameter_array(1:scalar:1))
   !ERROR: Rank-1 integer array used as upper bounds in DECLARATION must have constant size
-  integer :: abcdef(rank1_parameter_array(1:scalar:1))
+  integer :: abcdef(rank1_parameter_array(1:1:scalar))
 
   ! Test error for rank > 1, fulfilling constness
   integer, parameter :: rank2_parameter_array(2,2) = reshape([[1,2],[3,4]], [2,2])

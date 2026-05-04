@@ -536,104 +536,93 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
   auto collectBounds = [&](const SomeExpr &folded) -> std::vector<Bound> {
     std::vector<Bound> bounds;
 
+    // A) scalar
     if (folded.Rank() == 0) {
-      if (auto scalar{scalarExprToBound(folded)}) {
-        bounds.push_back(std::move(*scalar));
-      }
-      return bounds;
-    }
-    if (folded.Rank() != 1) {
+      auto scalar{scalarExprToBound(folded)};
+      bounds.push_back(std::move(*scalar));
       return bounds;
     }
 
     // B) Non-constant rank-1 array constructor: [a,b,...]
-    if (bounds.empty()) {
-      if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
-        bool ok{true};
-        common::visit(
-            [&](const auto &kindExpr) {
-              using K = std::decay_t<decltype(kindExpr)>;
-              using R = typename K::Result;
-              if (const auto *ctor{evaluate::UnwrapExpr<
-                      evaluate::ArrayConstructor<R>>(kindExpr)}) {
-                for (const auto &value : *ctor) {
-                  const auto *elem{
-                      std::get_if<evaluate::Expr<R>>(&value.u)};
-                  if (!elem || elem->Rank() != 0) {
-                    ok = false;
-                    return;
-                  }
-                  SomeIntExpr one{common::Clone(*elem)};
-                  auto sub{evaluate::Fold(context_.foldingContext(),
-                      evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                          std::move(one)))};
-                  bounds.emplace_back(
-                      Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+    if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
+      bool ok{true};
+      common::visit(
+          [&](const auto &kindExpr) {
+            using K = std::decay_t<decltype(kindExpr)>;
+            using R = typename K::Result;
+            if (const auto *ctor{evaluate::UnwrapExpr<
+                    evaluate::ArrayConstructor<R>>(kindExpr)}) {
+              for (const auto &value : *ctor) {
+                const auto *elem{
+                    std::get_if<evaluate::Expr<R>>(&value.u)};
+                if (!elem || elem->Rank() != 0) {
+                  ok = false;
+                  return;
                 }
+                SomeIntExpr one{common::Clone(*elem)};
+                auto sub{evaluate::Fold(context_.foldingContext(),
+                    evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                        std::move(one)))};
+                bounds.emplace_back(
+                    Bound{MaybeSubscriptIntExpr{std::move(sub)}});
               }
-            },
-            someInt->u);
-        if (!ok) {
-          bounds.clear();
-        }
+            }
+          },
+          someInt->u);
+      if (!ok) {
+        bounds.clear();
+      } else if(!bounds.empty()){
+        return bounds;
       }
     }
 
     // C) Constant rank-1 expression
-    if (bounds.empty()) {
-      auto values{extractValues(folded)};
+    auto values{extractValues(folded)};
+    if(!values.empty()) {
       bounds.reserve(values.size());
       for (auto value : values) {
         bounds.emplace_back(static_cast<common::ConstantSubscript>(value));
       }
+      return bounds;
     }
-
+    
     // D) General rank-1 expression over named arrays
-    if (bounds.empty()) {
-      auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
-      auto nExpr{
-          shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
-      if (nExpr) {
-        auto nFolded{
-            evaluate::Fold(context_.foldingContext(), std::move(*nExpr))};
-        auto n{evaluate::ToInt64(nFolded)};
-        if (n && *n > 0) {
-          std::vector<const Symbol *> rankOneSymbols;
-          for (const SymbolRef &ref : evaluate::CollectSymbols(folded)) {
-            const Symbol &symbol{ref.get()};
-            if (const ArraySpec *arrayShape{symbol.GetShape()};
-                arrayShape && arrayShape->Rank() == 1) {
-              rankOneSymbols.push_back(&symbol);
-            }
-          }
-          if (!rankOneSymbols.empty()) {
-            if (const auto *someInt{
-                    evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
-              bounds.reserve(static_cast<std::size_t>(*n));
-              bool ok{true};
-              for (std::int64_t k{0}; k < *n && ok; ++k) {
-                RankOneArrayElementSubstituter rewriter{k, rankOneSymbols,
-                    context_.foldingContext()};
-                std::optional<Bound> elementBound;
-                common::visit(
-                    [&](const auto &kindExpr) {
-                      auto scalarized{
-                          evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
-                      SomeIntExpr one{std::move(scalarized)};
-                      auto sub{evaluate::Fold(context_.foldingContext(),
-                          evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                              std::move(one)))};
-                      elementBound.emplace(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
-                    },
-                    someInt->u);
-                if (elementBound) {
-                  bounds.push_back(std::move(*elementBound));
-                } else {
-                  bounds.clear();
-                  ok = false;
-                }
-              }
-            }
+    auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
+    auto n{evaluate::ToInt64(evaluate::Fold(context_.foldingContext(),
+        evaluate::GetSize(*shape).value()))};
+    std::vector<const Symbol *> rankOneSymbols;
+    for (const SymbolRef &ref : evaluate::CollectSymbols(folded)) {
+      const Symbol &symbol{ref.get()};
+      if (const ArraySpec *arrayShape{symbol.GetShape()};
+          arrayShape && arrayShape->Rank() == 1) {
+        rankOneSymbols.push_back(&symbol);
+      }
+    }
+    if (!rankOneSymbols.empty()) {
+      if (const auto *someInt{
+              evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
+        bounds.reserve(static_cast<std::size_t>(*n));
+        bool ok{true};
+        for (std::int64_t k{0}; k < *n && ok; ++k) {
+          RankOneArrayElementSubstituter rewriter{k, rankOneSymbols,
+              context_.foldingContext()};
+          std::optional<Bound> elementBound;
+          common::visit(
+              [&](const auto &kindExpr) {
+                auto scalarized{
+                    evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+                SomeIntExpr one{std::move(scalarized)};
+                auto sub{evaluate::Fold(context_.foldingContext(),
+                    evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                        std::move(one)))};
+                elementBound.emplace(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+              },
+              someInt->u);
+          if (elementBound) {
+            bounds.push_back(std::move(*elementBound));
+          } else {
+            bounds.clear();
+            ok = false;
           }
         }
       }
@@ -658,9 +647,7 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
       return {};
     }
     if (expr->Rank() == 1) {
-      if (auto shape{evaluate::GetShape(context_.foldingContext(), *expr)};
-          !shape || shape->size() != 1 || !(*shape)[0] ||
-          !evaluate::ToInt64(*(*shape)[0])) {
+      if (!evaluate::GetConstantExtents(context_.foldingContext(), *expr)) {
         context_.Say(parser::FindSourceLocation(parseBound),
             "Rank-1 integer array used as %s bounds in DECLARATION must "
             "have constant size"_err_en_US,
