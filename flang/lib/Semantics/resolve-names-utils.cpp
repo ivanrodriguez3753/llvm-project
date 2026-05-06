@@ -599,47 +599,6 @@ TryExtractRankOneElement(evaluate::FoldingContext &context,
     return std::nullopt;
   }
 
-  // Fast path for constant vectors.
-  if (const auto *constVec{evaluate::UnwrapExpr<
-          evaluate::Constant<evaluate::SubscriptInteger>>(folded)}) {
-    if (static_cast<std::size_t>(k) < constVec->values().size()) {
-      return evaluate::Expr<evaluate::SubscriptInteger>{
-          evaluate::Constant<evaluate::SubscriptInteger>{
-              constVec->values()[k]}};
-    }
-    return std::nullopt;
-  }
-
-  // SPREAD(scalar, dim=1, n): each element is the scalar source value.
-  if (const auto *spreadCall{evaluate::UnwrapExpr<
-          evaluate::FunctionRef<evaluate::SubscriptInteger>>(folded)}) {
-    if (const auto *intr{spreadCall->proc().GetSpecificIntrinsic()};
-        intr && intr->name == "spread") {
-      const auto *srcArgExpr{spreadCall->UnwrapArgExpr(0)};
-      const auto *dimArgExpr{spreadCall->UnwrapArgExpr(1)};
-      if (srcArgExpr && dimArgExpr && srcArgExpr->Rank() == 0) {
-        if (const auto *dimInt{evaluate::UnwrapExpr<SomeIntExpr>(*dimArgExpr)}) {
-          auto dimAsSI{evaluate::Fold(context,
-              evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                  common::Clone(*dimInt)))};
-          if (auto dim{evaluate::ToInt64(dimAsSI)}; dim && *dim == 1) {
-            if (const auto *srcInt{evaluate::UnwrapExpr<SomeIntExpr>(*srcArgExpr)}) {
-              auto srcAsSI{evaluate::Fold(context,
-                  evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                      common::Clone(*srcInt)))};
-              if (srcAsSI.Rank() == 0) {
-                return srcAsSI;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Fallback for named arrays/sections/vector subscripts.
-  // Directly use extractVectorElement instead of rewriter pattern to avoid
-  // infinite recursion cycles with designator scalarization.
   return extractVectorElement(context, folded, k);
 }
 
