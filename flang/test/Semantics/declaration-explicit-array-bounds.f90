@@ -6,6 +6,7 @@ subroutine array_flatten(int)
   !so neither of these should produce an error or warning.
   integer :: fff([int, int])
   integer :: ff([[int, [int, int]]])
+  integer :: arr([(int+i, integer(8) :: i=1_8, 2_8)])
 end subroutine
 module bounds_provider
   implicit none
@@ -130,7 +131,4 @@ program declaration_array_bounds
   !ERROR: Must be a scalar value, but is a rank-1 array
   !ERROR: Must have INTEGER type, but is REAL(4)
   integer :: test_array([1,2,3] : [2,3,4], 3, [1,2,3], 5.2)
-
-  integer(8) :: x = 1
-  ! integer :: arr([(x, integer(8) :: i=1_8, 2_8)])
 end program
