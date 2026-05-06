@@ -499,93 +499,197 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
   const auto &lowerBoundOpt{std::get<0>(x.t)};
   const auto &upperBound{std::get<1>(x.t)};
 
-  auto scalarExprToBound = [&](const SomeExpr &expr) -> std::optional<Bound> {
-    if (const auto *intExpr{evaluate::UnwrapExpr<SomeIntExpr>(expr)}) {
-      auto subscript{evaluate::Fold(context_.foldingContext(),
-          evaluate::ConvertToType<evaluate::SubscriptInteger>(
-              common::Clone(*intExpr)))};
-      return Bound{MaybeSubscriptIntExpr{std::move(subscript)}};
-    }
-    return std::nullopt;
+  auto scalarExprToBound = [&](const SomeIntExpr &intExpr) -> Bound {
+    auto subscript{evaluate::Fold(context_.foldingContext(),
+        evaluate::ConvertToType<evaluate::SubscriptInteger>(
+            common::Clone(intExpr)))};
+    return Bound{MaybeSubscriptIntExpr{std::move(subscript)}};
   };
 
   auto extractValues =
-      [&](const SomeExpr &folded) -> std::vector<std::int64_t> {
+    [&](const SomeIntExpr &someInt) -> std::vector<std::int64_t> {
     std::vector<std::int64_t> values;
-    if (auto scalar{evaluate::ToInt64(folded)}) {
-      values.push_back(*scalar);
-    } else if (const auto *someInt{
-                   evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
-      common::visit(
-          [&](const auto &kindExpr) {
-            using T = std::decay_t<decltype(kindExpr)>;
-            if (const auto *constArray{
-                    evaluate::UnwrapExpr<
-                        evaluate::Constant<typename T::Result>>(kindExpr)}) {
-              for (auto it{constArray->values().begin()};
-                   it != constArray->values().end(); ++it) {
-                values.push_back(it->ToInt64());
-              }
+    common::visit(
+        [&](const auto &kindExpr) {
+          using T = std::decay_t<decltype(kindExpr)>;
+          if (const auto *constArray{evaluate::UnwrapExpr<
+                  evaluate::Constant<typename T::Result>>(kindExpr)}) {
+            for (const auto &v : constArray->values()) {
+              values.push_back(v.ToInt64());
             }
-          },
-          someInt->u);
-    }
+          }
+        },
+        someInt.u);
     return values;
   };
 
   auto collectBounds = [&](const SomeExpr &folded) -> std::vector<Bound> {
+    const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
+    if (!someInt) {
+      return {};
+    }
+
     std::vector<Bound> bounds;
 
     // A) scalar
-    if (folded.Rank() == 0) {
-      auto scalar{scalarExprToBound(folded)};
-      bounds.push_back(std::move(*scalar));
+    if (someInt->Rank() == 0) {
+      bounds.push_back(scalarExprToBound(*someInt));
       return bounds;
+    } 
+
+
+    // B) Non-constant rank-1 array constructor: [a,b,...]
+    // Convert once to SubscriptInteger kind so we avoid kind-dispatch here.
+    SomeIntExpr converted{common::Clone(*someInt)};
+    auto subscriptExpr{evaluate::Fold(context_.foldingContext(),
+        evaluate::ConvertToType<evaluate::SubscriptInteger>(
+            std::move(converted)))};
+    if (const auto *ctor{evaluate::UnwrapExpr<
+            evaluate::ArrayConstructor<evaluate::SubscriptInteger>>(
+            subscriptExpr)}) {
+      // bool ok{true};
+      // for (const auto &value : *ctor) {
+      //   const auto *elem{std::get_if<evaluate::Expr<evaluate::SubscriptInteger>>(&value.u)};
+      //   if (!elem || elem->Rank() != 0) {
+      //     ok = false;
+      //     break;
+      //   }
+      // }
+      // if(ok) {
+      //   for (const auto &value : *ctor) {
+      //     const auto &elem{
+      //         std::get<evaluate::Expr<evaluate::SubscriptInteger>>(
+      //             value.u)};
+      //     bounds.push_back(
+      //         Bound{MaybeSubscriptIntExpr{common::Clone(elem)}});
+      //   }
+      //   return bounds;
+      // }
+      // ;
+      std::function<bool(const evaluate::ArrayConstructor<evaluate::SubscriptInteger>&)>
+      validateCtor;
+      std::function<void(const evaluate::ArrayConstructor<evaluate::SubscriptInteger>&)>
+      extractCtor;
+
+      validateCtor = [&](const auto &ctor) -> bool {
+        for (const auto &value : ctor) {
+          const auto *elem =
+              std::get_if<evaluate::Expr<evaluate::SubscriptInteger>>(&value.u);
+          if (!elem) return false;
+          if (elem->Rank() == 0) continue;
+          if (elem->Rank() != 1) return false;
+          auto foldedElem{evaluate::Fold(context_.foldingContext(), common::Clone(*elem))};
+          const auto *nested{
+            evaluate::UnwrapExpr<evaluate::ArrayConstructor<evaluate::SubscriptInteger>>(foldedElem)};
+          if (!nested || !validateCtor(*nested)) return false;
+        }
+        return true;
+      };
+      extractCtor = [&](const auto &ctor) {
+        for (const auto &value : ctor) {
+          const auto &elem =
+              std::get<evaluate::Expr<evaluate::SubscriptInteger>>(value.u);
+          if (elem.Rank() == 0) {
+            bounds.emplace_back(Bound{MaybeSubscriptIntExpr{common::Clone(elem)}});
+          } else {
+            auto foldedElem{evaluate::Fold(context_.foldingContext(), common::Clone(elem))};
+            const auto *nested{
+              evaluate::UnwrapExpr<evaluate::ArrayConstructor<evaluate::SubscriptInteger>>(foldedElem)};
+            extractCtor(*nested);
+          }
+        }
+      };
+
+      if(validateCtor(*ctor)) {
+        extractCtor(*ctor);
+        if (!bounds.empty()) return bounds;
+      }
+    }
+    else {
+      printf("not (B) bc not ArrayConstructor\n");
     }
 
     // B) Non-constant rank-1 array constructor: [a,b,...]
-    if (const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
-      bool ok{true};
-      common::visit(
-          [&](const auto &kindExpr) {
-            using K = std::decay_t<decltype(kindExpr)>;
-            using R = typename K::Result;
-            if (const auto *ctor{evaluate::UnwrapExpr<
-                    evaluate::ArrayConstructor<R>>(kindExpr)}) {
-              for (const auto &value : *ctor) {
-                const auto *elem{
-                    std::get_if<evaluate::Expr<R>>(&value.u)};
-                if (!elem || elem->Rank() != 0) {
-                  ok = false;
-                  return;
-                }
-                SomeIntExpr one{common::Clone(*elem)};
-                auto sub{evaluate::Fold(context_.foldingContext(),
-                    evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                        std::move(one)))};
-                bounds.emplace_back(
-                    Bound{MaybeSubscriptIntExpr{std::move(sub)}});
-              }
-            }
-          },
-          someInt->u);
-      if (!ok) {
-        bounds.clear();
-      } else if(!bounds.empty()){
-        return bounds;
-      }
-    }
+    // Convert once to SubscriptInteger kind so we avoid kind-dispatch here.
+    // SomeIntExpr converted{common::Clone(*someInt)};
+    // auto subscriptExpr{evaluate::Fold(context_.foldingContext(),
+    //     evaluate::ConvertToType<evaluate::SubscriptInteger>(
+    //         std::move(converted)))};
+
+    // if (const auto *ctor{evaluate::UnwrapExpr<
+    //         evaluate::ArrayConstructor<evaluate::SubscriptInteger>>(
+    //         subscriptExpr)}) {
+    //   bool ok{true};
+
+    //   // Pass 1: validate all elements are scalar Expr<SubscriptInteger>.
+    //   for (const auto &value : *ctor) {
+    //     const auto *elem{
+    //         std::get_if<evaluate::Expr<evaluate::SubscriptInteger>>(&value.u)};
+    //     if (!elem || elem->Rank() != 0) {
+    //       ok = false;
+    //       break;
+    //     }
+    //   }
+
+    //   if (!ok) {
+    //     bounds.clear();
+    //   } else {
+    //     // Pass 2: extract.
+    //     // bounds.reserve(ctor->size());
+    //     for (const auto &value : *ctor) {
+    //       const auto *elem{
+    //           std::get_if<evaluate::Expr<evaluate::SubscriptInteger>>(
+    //               &value.u)};
+    //       bounds.emplace_back(
+    //           Bound{MaybeSubscriptIntExpr{common::Clone(*elem)}});
+    //     }
+    //     if (!bounds.empty()) {
+    //       return bounds;
+    //     }
+    //   }
+    // }
 
     // C) Constant rank-1 expression
-    auto values{extractValues(folded)};
-    if(!values.empty()) {
+    auto values{extractValues(*someInt)};
+    if (!values.empty()) {
       bounds.reserve(values.size());
       for (auto value : values) {
         bounds.emplace_back(static_cast<common::ConstantSubscript>(value));
       }
       return bounds;
     }
-    
+
+        // Generic rank-1 extraction with constant extent
+    // auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
+    // auto nExpr{shape ? evaluate::GetSize(*shape) : evaluate::MaybeExtentExpr{}};
+    // if (nExpr) {
+    //   auto nFolded{
+    //       evaluate::Fold(context_.foldingContext(), std::move(*nExpr))};
+    //   auto n{evaluate::ToInt64(nFolded)};
+    //   if (n && *n > 0) {
+    //     auto vecFolded{evaluate::Fold(context_.foldingContext(),
+    //         evaluate::ConvertToType<evaluate::SubscriptInteger>(
+    //             common::Clone(*someInt)))};
+    //     if (const auto *vecExpr{evaluate::UnwrapExpr<
+    //             evaluate::Expr<evaluate::SubscriptInteger>>(vecFolded)}) {
+    //       bool ok{true};
+    //       for (std::int64_t k{0}; k < *n && ok; ++k) {
+    //         auto elem{
+    //             extractVectorElement(context_.foldingContext(), *vecExpr, k)};
+    //         if (!elem) {
+    //           ok = false;
+    //           break;
+    //         }
+    //         bounds.emplace_back(Bound{MaybeSubscriptIntExpr{std::move(*elem)}});
+    //       }
+    //       if (ok && !bounds.empty()) {
+    //         return bounds;
+    //       }
+    //       bounds.clear();
+    //     }
+    //   }
+    // }
+
     // D) General rank-1 expression over named arrays
     auto shape{evaluate::GetShape(context_.foldingContext(), folded)};
     auto n{evaluate::ToInt64(evaluate::Fold(context_.foldingContext(),
@@ -599,35 +703,35 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
       }
     }
     if (!rankOneSymbols.empty()) {
-      if (const auto *someInt{
-              evaluate::UnwrapExpr<SomeIntExpr>(folded)}) {
-        bounds.reserve(static_cast<std::size_t>(*n));
-        bool ok{true};
-        for (std::int64_t k{0}; k < *n && ok; ++k) {
-          RankOneArrayElementSubstituter rewriter{k, rankOneSymbols,
-              context_.foldingContext()};
-          std::optional<Bound> elementBound;
-          common::visit(
-              [&](const auto &kindExpr) {
-                auto scalarized{
-                    evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
-                SomeIntExpr one{std::move(scalarized)};
-                auto sub{evaluate::Fold(context_.foldingContext(),
-                    evaluate::ConvertToType<evaluate::SubscriptInteger>(
-                        std::move(one)))};
-                elementBound.emplace(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
-              },
-              someInt->u);
-          if (elementBound) {
-            bounds.push_back(std::move(*elementBound));
-          } else {
-            bounds.clear();
-            ok = false;
-          }
+      bounds.reserve(static_cast<std::size_t>(*n));
+      bool ok{true};
+      for (std::int64_t k{0}; k < *n && ok; ++k) {
+        RankOneArrayElementSubstituter rewriter{
+            k, rankOneSymbols, context_.foldingContext()};
+        std::optional<Bound> elementBound;
+        common::visit(
+            [&](const auto &kindExpr) {
+              auto scalarized{
+                  evaluate::rewrite::Mutator{rewriter}(common::Clone(kindExpr))};
+              SomeIntExpr one{std::move(scalarized)};
+              auto sub{evaluate::Fold(context_.foldingContext(),
+                  evaluate::ConvertToType<evaluate::SubscriptInteger>(
+                      std::move(one)))};
+              elementBound.emplace(Bound{MaybeSubscriptIntExpr{std::move(sub)}});
+            },
+            someInt->u);
+        if (elementBound) {
+          bounds.push_back(std::move(*elementBound));
+        } else {
+          bounds.clear();
+          ok = false;
+          DIE("cant be here");
         }
       }
+    } else {
+      DIE("cant be here either");
     }
-
+    
     return bounds;
   };
 

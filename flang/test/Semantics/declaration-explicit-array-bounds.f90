@@ -1,5 +1,12 @@
 ! RUN: %python %S/test_errors.py %s %flang_fc1 -Wautomatic-in-main-program -Wsaved-local-in-spec-expr
 ! ---- Module with rank-1 array-bounded declarations, USE'd elsewhere ----
+subroutine array_flatten(int)
+  integer, intent(IN) :: int
+  !Array Constructors produce rank-1 arrays, even with nested arrays,
+  !so neither of these should produce an error or warning.
+  integer :: fff([int, int])
+  integer :: ff([[int, [int, int]]])
+end subroutine
 module bounds_provider
   implicit none
   integer, parameter :: dims(3) = [5, 5, 5]
@@ -72,9 +79,6 @@ program declaration_array_bounds
   integer :: g(rank1_parameter_array)
   integer :: ggg(rank1_parameter_array * 2 : rank1_parameter_array - 1)
 
-  integer :: int 
-  integer :: ff([[int, int]])
-
 
   ! Negative cases (erros expected)
   integer :: rank1_array(3) = [5,5,5]
@@ -126,4 +130,7 @@ program declaration_array_bounds
   !ERROR: Must be a scalar value, but is a rank-1 array
   !ERROR: Must have INTEGER type, but is REAL(4)
   integer :: test_array([1,2,3] : [2,3,4], 3, [1,2,3], 5.2)
+
+  integer(8) :: x = 1
+  ! integer :: arr([(x, integer(8) :: i=1_8, 2_8)])
 end program
