@@ -8,6 +8,13 @@ subroutine array_flatten(int)
   integer :: ff([[int, [int, int]]])
   integer :: arr([(int+i, integer(8) :: i=1_8, 2_8)])
 end subroutine
+module getter 
+contains 
+  pure function get_bounds() result(r)
+    integer :: r(2)
+    r = [8, 9]
+  end function
+end module
 module bounds_provider
   implicit none
   integer, parameter :: dims(3) = [5, 5, 5]
@@ -58,6 +65,7 @@ module data
   integer :: gg3(nonconstsize : nonconstsize)
 end module 
 program declaration_array_bounds
+  use getter
   implicit none
 
   ! Valid cases (no errors expected)
@@ -79,6 +87,9 @@ program declaration_array_bounds
   integer, parameter :: rank1_parameter_array(3) = [5,5,5]
   integer :: g(rank1_parameter_array)
   integer :: ggg(rank1_parameter_array * 2 : rank1_parameter_array - 1)
+
+  ! Function result (rank-1 integer array) as explicit shape bounds
+  integer :: from_func(get_bounds())
 
 
   ! Negative cases (erros expected)
@@ -131,4 +142,6 @@ program declaration_array_bounds
   !ERROR: Must be a scalar value, but is a rank-1 array
   !ERROR: Must have INTEGER type, but is REAL(4)
   integer :: test_array([1,2,3] : [2,3,4], 3, [1,2,3], 5.2)
+
+
 end program
