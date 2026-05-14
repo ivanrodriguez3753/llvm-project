@@ -77,6 +77,40 @@ static mlir::Value genScalarValue(Fortran::lower::AbstractConverter &converter,
       loc, converter, expr, symMap, context));
 }
 
+/// If a bound expression is rank-1, evaluate it once as a whole array and
+/// return the resulting entity.  Returns std::nullopt for scalar expressions.
+static std::optional<hlfir::Entity> evalRankOneBound(
+    Fortran::lower::AbstractConverter &converter, mlir::Location loc,
+    const Fortran::lower::SomeExpr &expr,
+    Fortran::lower::SymMap &symMap,
+    Fortran::lower::StatementContext &stmtCtx) {
+  if (expr.Rank() > 0)
+    return hlfir::Entity{Fortran::lower::convertExprToHLFIR(
+        loc, converter, expr, symMap, stmtCtx)};
+  return std::nullopt;
+}
+
+/// Lower a bound expression.  If it is rank-1, extract the element at the
+/// given index position from \p preEvaluated (if provided) or by evaluating
+/// the expression.  For scalar expressions, \p index and \p preEvaluated are
+/// ignored.
+static mlir::Value genBoundValue(
+    Fortran::lower::AbstractConverter &converter, mlir::Location loc,
+    const Fortran::lower::SomeExpr &expr, mlir::Value index,
+    Fortran::lower::SymMap &symMap,
+    Fortran::lower::StatementContext &stmtCtx,
+    const std::optional<hlfir::Entity> &preEvaluated) {
+  if (expr.Rank() > 0) {
+    fir::FirOpBuilder &builder = converter.getFirOpBuilder();
+    hlfir::Entity arrayEntity = preEvaluated
+        ? *preEvaluated
+        : hlfir::Entity{Fortran::lower::convertExprToHLFIR(
+              loc, converter, expr, symMap, stmtCtx)};
+    return hlfir::loadElementAt(loc, builder, arrayEntity, {index});
+  }
+  return genScalarValue(converter, loc, expr, symMap, stmtCtx);
+}
+
 /// Does this variable have a default initialization?
 bool Fortran::lower::hasDefaultInitialization(
     const Fortran::semantics::Symbol &sym) {
@@ -1738,11 +1772,21 @@ static void lowerExplicitLowerBounds(
       result.emplace_back(builder.createIntegerConstant(loc, idxTy, lb));
     return;
   }
-  for (const Fortran::semantics::ShapeSpec *spec : box.dynamicBound()) {
-    if (auto low = spec->lbound().GetExplicit()) {
+  // Pre-evaluate rank-1 lbound expression once (all specs share the same one).
+  std::optional<hlfir::Entity> lbEntity;
+  if (!box.dynamicBound().empty()) {
+    if (auto low = box.dynamicBound()[0]->lbound().GetExplicit()) {
       auto expr = Fortran::lower::SomeExpr{*low};
-      mlir::Value lb = builder.createConvert(
-          loc, idxTy, genScalarValue(converter, loc, expr, symMap, stmtCtx));
+      lbEntity = evalRankOneBound(converter, loc, expr, symMap, stmtCtx);
+    }
+  }
+  for (const auto &spec : llvm::enumerate(box.dynamicBound())) {
+    if (auto low = spec.value()->lbound().GetExplicit()) {
+      auto expr = Fortran::lower::SomeExpr{*low};
+      mlir::Value idx = builder.createIntegerConstant(
+          loc, idxTy, spec.index() + 1);
+      mlir::Value lb = builder.createConvert(loc, idxTy,
+          genBoundValue(converter, loc, expr, idx, symMap, stmtCtx, lbEntity));
       result.emplace_back(lb);
     }
   }
@@ -1777,11 +1821,21 @@ lowerExplicitExtents(Fortran::lower::AbstractConverter &converter,
       result.emplace_back(builder.createIntegerConstant(loc, idxTy, extent));
     return;
   }
+  // Pre-evaluate rank-1 ubound expression once (all specs share the same one).
+  std::optional<hlfir::Entity> ubEntity;
+  if (!box.dynamicBound().empty()) {
+    if (auto up = box.dynamicBound()[0]->ubound().GetExplicit()) {
+      auto expr = Fortran::lower::SomeExpr{*up};
+      ubEntity = evalRankOneBound(converter, loc, expr, symMap, stmtCtx);
+    }
+  }
   for (const auto &spec : llvm::enumerate(box.dynamicBound())) {
     if (auto up = spec.value()->ubound().GetExplicit()) {
       auto expr = Fortran::lower::SomeExpr{*up};
-      mlir::Value ub = builder.createConvert(
-          loc, idxTy, genScalarValue(converter, loc, expr, symMap, stmtCtx));
+      mlir::Value idx = builder.createIntegerConstant(
+          loc, idxTy, spec.index() + 1);
+      mlir::Value ub = builder.createConvert(loc, idxTy,
+          genBoundValue(converter, loc, expr, idx, symMap, stmtCtx, ubEntity));
       if (lowerBounds.empty())
         result.emplace_back(fir::factory::genMaxWithZero(builder, loc, ub));
       else
@@ -2365,13 +2419,24 @@ void Fortran::lower::mapSymbolAttributes(
 
   // The origin must be \vec{1}.
   auto populateShape = [&](auto &shapes, const auto &bounds, mlir::Value box) {
+    // Pre-evaluate rank-1 ubound expression once.
+    std::optional<hlfir::Entity> ubEntity;
+    if (!bounds.empty()) {
+      if (auto high = bounds[0]->ubound().GetExplicit()) {
+        Fortran::lower::SomeExpr highEx{*high};
+        ubEntity = evalRankOneBound(converter, loc, highEx, symMap, stmtCtx);
+      }
+    }
     for (auto iter : llvm::enumerate(bounds)) {
       auto *spec = iter.value();
       assert(spec->lbound().GetExplicit() &&
              "lbound must be explicit with constant value 1");
       if (auto high = spec->ubound().GetExplicit()) {
         Fortran::lower::SomeExpr highEx{*high};
-        mlir::Value ub = genValue(highEx);
+        mlir::Value idx = builder.createIntegerConstant(
+            loc, idxTy, iter.index() + 1);
+        mlir::Value ub = genBoundValue(converter, loc, highEx,
+            idx, symMap, stmtCtx, ubEntity);
         ub = builder.createConvert(loc, idxTy, ub);
         shapes.emplace_back(fir::factory::genMaxWithZero(builder, loc, ub));
       } else if (spec->ubound().isColon()) {
@@ -2392,6 +2457,18 @@ void Fortran::lower::mapSymbolAttributes(
   // The origin is not \vec{1}.
   auto populateLBoundsExtents = [&](auto &lbounds, auto &extents,
                                     const auto &bounds, mlir::Value box) {
+    // Pre-evaluate rank-1 lbound/ubound expressions once.
+    std::optional<hlfir::Entity> lbEntity, ubEntity;
+    if (!bounds.empty()) {
+      if (auto low = bounds[0]->lbound().GetExplicit()) {
+        auto expr = Fortran::lower::SomeExpr{*low};
+        lbEntity = evalRankOneBound(converter, loc, expr, symMap, stmtCtx);
+      }
+      if (auto high = bounds[0]->ubound().GetExplicit()) {
+        auto expr = Fortran::lower::SomeExpr{*high};
+        ubEntity = evalRankOneBound(converter, loc, expr, symMap, stmtCtx);
+      }
+    }
     for (auto iter : llvm::enumerate(bounds)) {
       auto *spec = iter.value();
       fir::BoxDimsOp dimInfo;
@@ -2407,7 +2484,11 @@ void Fortran::lower::mapSymbolAttributes(
         extents.emplace_back(dimInfo.getResult(1));
         if (auto low = spec->lbound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*low};
-          mlir::Value lb = builder.createConvert(loc, idxTy, genValue(expr));
+          mlir::Value idx = builder.createIntegerConstant(
+              loc, idxTy, iter.index() + 1);
+          mlir::Value lb = builder.createConvert(loc, idxTy,
+              genBoundValue(converter, loc, expr, idx, symMap, stmtCtx,
+                            lbEntity));
           lbounds.emplace_back(lb);
         } else {
           // Implicit lower bound is 1 (Fortran 2018 section 8.5.8.3 point 3.)
@@ -2416,7 +2497,11 @@ void Fortran::lower::mapSymbolAttributes(
       } else {
         if (auto low = spec->lbound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*low};
-          lb = builder.createConvert(loc, idxTy, genValue(expr));
+          mlir::Value idx = builder.createIntegerConstant(
+              loc, idxTy, iter.index() + 1);
+          lb = builder.createConvert(loc, idxTy,
+              genBoundValue(converter, loc, expr, idx, symMap, stmtCtx,
+                            lbEntity));
         } else {
           TODO(loc, "support for assumed rank entities");
         }
@@ -2424,7 +2509,11 @@ void Fortran::lower::mapSymbolAttributes(
 
         if (auto high = spec->ubound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*high};
-          ub = builder.createConvert(loc, idxTy, genValue(expr));
+          mlir::Value idx = builder.createIntegerConstant(
+              loc, idxTy, iter.index() + 1);
+          ub = builder.createConvert(loc, idxTy,
+              genBoundValue(converter, loc, expr, idx, symMap, stmtCtx,
+                            ubEntity));
           extents.emplace_back(
               fir::factory::computeExtent(builder, loc, lb, ub));
         } else {

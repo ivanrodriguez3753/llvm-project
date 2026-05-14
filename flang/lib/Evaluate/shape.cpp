@@ -306,8 +306,20 @@ public:
             } else {
               return *lbound;
             }
-          } else {
-            return Result{1};
+          } else if (lbound && lbound->Rank() > 0) {
+            // Rank-1 bound expression (e.g. from SHAPE(x) or array-valued
+            // lower bound): cannot be decomposed to a per-dimension scalar
+            // here. For LBOUND intrinsic, return empty to prevent incorrect
+            // folding; Lower handles element extraction at runtime.
+            if constexpr (LBOUND_SEMANTICS) {
+              return Result{};
+            }
+            // For raw lower bound queries (LBOUND_SEMANTICS=false), fall
+            // through: the result type (ExtentExpr) is non-optional, and
+            // we cannot produce a correct per-dimension value here.
+            // Callers that reach this point already guard against
+            // non-scalar results (e.g. GetExtent returns nullopt for
+            // rank-1 bounds, causing ComputeUpperBound to return nullopt).
           }
         }
         if (IsDescriptor(symbol)) {

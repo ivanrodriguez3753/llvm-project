@@ -14,6 +14,10 @@ contains
     integer :: r(2)
     r = [8, 9]
   end function
+  subroutine foo() 
+    ! Function result (rank-1 integer array) as explicit shape bounds
+    integer :: from_func(get_bounds())
+  end subroutine 
 end module
 module bounds_provider
   implicit none
@@ -87,9 +91,6 @@ program declaration_array_bounds
   integer, parameter :: rank1_parameter_array(3) = [5,5,5]
   integer :: g(rank1_parameter_array)
   integer :: ggg(rank1_parameter_array * 2 : rank1_parameter_array - 1)
-
-  ! Function result (rank-1 integer array) as explicit shape bounds
-  integer :: from_func(get_bounds())
 
 
   ! Negative cases (erros expected)

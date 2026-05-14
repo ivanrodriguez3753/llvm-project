@@ -631,7 +631,12 @@ private:
   void MakeDeferred(int);
   Bound GetBound(const std::optional<parser::SpecificationExpr> &);
   Bound GetBound(const parser::SpecificationExpr &);
-  std::optional<std::pair<std::vector<Bound>, std::vector<Bound>>> checkExplicitShapeBoundsSpec(const parser::ExplicitShapeBoundsSpec &x);
+  struct ExplicitShapeBoundsResult {
+    Bound ubound;
+    std::optional<Bound> lbound;
+    std::int64_t numDims;
+  };
+  std::optional<ExplicitShapeBoundsResult> checkExplicitShapeBoundsSpec(const parser::ExplicitShapeBoundsSpec &x);
 };
 
 ArraySpec AnalyzeArraySpec(
@@ -882,88 +887,89 @@ TryExpandRankOneToScalars(
   return TryExpandRankOneToScalars(context, asSI);
 }
 
-std::optional<std::pair<std::vector<Bound>, std::vector<Bound>>>
+std::optional<ArraySpecAnalyzer::ExplicitShapeBoundsResult>
 ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
     const parser::ExplicitShapeBoundsSpec &x) {
   const auto &lowerBoundOpt{std::get<0>(x.t)};
   const auto &upperBound{std::get<1>(x.t)};
 
-  auto collectBounds = [&](const SomeExpr &folded) -> std::vector<Bound> {
-    std::vector<Bound> bounds;
-    const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
-    if (!someInt) {
-      return bounds;
-    }
-
-    if (auto elems{
-            TryExpandRankOneToScalars(context_.foldingContext(), *someInt)}) {
-      bounds.reserve(elems->size());
-      for (auto &e : *elems) {
-        bounds.emplace_back(Bound{MaybeSubscriptIntExpr{std::move(e)}});
-      }
-    }
-    return bounds;
-  };
-
-  // Helper to analyze, validate, fold, and collect bounds for one expression.
-  // Returns empty vector on error; sets hasError.
-  bool hasError{false}, scalarPresent{false};
+  // Analyze, validate, fold, and wrap one bound expression in a Bound.
+  // Returns the Bound and, for rank-1, the constant extent; for scalar
+  // the extent is 0 (meaning "broadcast").
+  bool hasError{false};
   auto analyzeBound = [&](const auto &parseBound, bool isUpper)
-      -> std::vector<Bound> {
+      -> std::optional<std::pair<Bound, std::int64_t>> {
     MaybeExpr expr{AnalyzeExpr(context_, parseBound.thing)};
     if (expr->Rank() > 1) {
-      parser::CharBlock at{parser::FindSourceLocation(parseBound)};
-      context_.Say(at,
+      context_.Say(parser::FindSourceLocation(parseBound),
           "Integer array used as %s bounds in DECLARATION must be rank-1 "
           "but is rank-%d"_err_en_US,
           isUpper ? "upper" : "lower", expr->Rank());
       hasError = true;
-      return {};
-    }
-    if (expr->Rank() == 1) {
-      if (!evaluate::GetConstantExtents(context_.foldingContext(), *expr)) {
-        context_.Say(parser::FindSourceLocation(parseBound),
-            "Rank-1 integer array used as %s bounds in DECLARATION must "
-            "have constant size"_err_en_US,
-            isUpper ? "upper" : "lower");
-        hasError = true;
-        return {};
-      }
-    } else {
-      scalarPresent = true;
+      return std::nullopt;
     }
     auto folded{evaluate::Fold(context_.foldingContext(), std::move(*expr))};
-    auto bounds{collectBounds(folded)};
-    if (bounds.empty()) {
+    const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
+    if (!someInt) {
       hasError = true;
+      return std::nullopt;
     }
-    return bounds;
+    auto asSI{evaluate::Fold(context_.foldingContext(),
+        evaluate::ConvertToType<evaluate::SubscriptInteger>(
+            common::Clone(*someInt)))};
+    if (folded.Rank() == 0) {
+      return std::make_pair(
+          Bound{MaybeSubscriptIntExpr{std::move(asSI)}}, std::int64_t{0});
+    }
+    // Rank-1: must have constant extent.
+    auto extents{
+        evaluate::GetConstantExtents(context_.foldingContext(), folded)};
+    if (!extents) {
+      context_.Say(parser::FindSourceLocation(parseBound),
+          "Rank-1 integer array used as %s bounds in DECLARATION must "
+          "have constant size"_err_en_US,
+          isUpper ? "upper" : "lower");
+      hasError = true;
+      return std::nullopt;
+    }
+    return std::make_pair(
+        Bound{MaybeSubscriptIntExpr{std::move(asSI)}}, (*extents)[0]);
   };
 
   // Upper bound (required)
-  std::vector<Bound> ubounds{analyzeBound(upperBound, /*isUpper=*/true)};
+  auto ubResult{analyzeBound(upperBound, /*isUpper=*/true)};
 
-  // Lower bound (optional) — always check even if upper failed
-  std::vector<Bound> lbounds;
+  // Lower bound (optional)
+  std::optional<std::pair<Bound, std::int64_t>> lbResult;
   if (lowerBoundOpt) {
-    lbounds = analyzeBound(*lowerBoundOpt, /*isUpper=*/false);
-  }
-
-  // Size mismatch check (only meaningful if both are arrays)
-  if (!hasError && !lbounds.empty() && !scalarPresent && ubounds.size() != lbounds.size()) {
-    parser::CharBlock at{parser::FindSourceLocation(x)};
-    context_.Say(at,
-        "DECLARATION bounds integer rank-1 arrays must have the same size; "
-        "lower bounds has %jd elements, upper bounds has %jd elements"_err_en_US,
-        lbounds.size(), ubounds.size());
-    hasError = true;
+    lbResult = analyzeBound(*lowerBoundOpt, /*isUpper=*/false);
   }
 
   if (hasError) {
     return std::nullopt;
   }
 
-  return std::make_pair(std::move(ubounds), std::move(lbounds));
+  std::int64_t ubExtent{ubResult->second};
+  std::int64_t lbExtent{lbResult ? lbResult->second : 0};
+
+  // Determine numDims from whichever is rank-1 (extent > 0).
+  std::int64_t numDims{std::max(ubExtent, lbExtent)};
+
+  // Size mismatch check (only when both are rank-1).
+  if (ubExtent > 0 && lbExtent > 0 && ubExtent != lbExtent) {
+    context_.Say(parser::FindSourceLocation(x),
+        "DECLARATION bounds integer rank-1 arrays must have the same size; "
+        "lower bounds has %jd elements, upper bounds has %jd elements"_err_en_US,
+        lbExtent, ubExtent);
+    return std::nullopt;
+  }
+
+  std::optional<Bound> lb;
+  if (lbResult) {
+    lb.emplace(std::move(lbResult->first));
+  }
+  return ExplicitShapeBoundsResult{
+      std::move(ubResult->first), std::move(lb), numDims};
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
@@ -972,16 +978,12 @@ void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
     arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
     return;
   }
-  auto &[ubounds, lbounds]{*result};
-  std::size_t numDims{std::max(ubounds.size(), lbounds.size())};
-  for (std::size_t i{0}; i < numDims; ++i) {
+  for (std::int64_t i{0}; i < result->numDims; ++i) {
     Bound lb{1};
-    if (!lbounds.empty()) {
-      std::size_t lbIdx{lbounds.size() == 1 ? 0 : i};
-      lb = lbounds[lbIdx];
+    if (result->lbound) {
+      lb = *result->lbound;
     }
-    std::size_t ubIdx{ubounds.size() == 1 ? 0 : i};
-    Bound ub{ubounds[ubIdx]};
+    Bound ub{result->ubound};
     arraySpec_.push_back(ShapeSpec::MakeExplicit(std::move(lb), std::move(ub)));
   }
 }

@@ -426,12 +426,33 @@ Fortran::lower::genCallOpAndResult(
     if (!caller.callerAllocateResult())
       return {};
     mlir::Type type = caller.getResultStorageType();
-    if (mlir::isa<fir::SequenceType>(type))
+    if (mlir::isa<fir::SequenceType>(type)) {
+      std::optional<hlfir::Entity> preEvaluatedExtent;
+      int dimIdx = 0;
       caller.walkResultExtents(
           [&](const Fortran::lower::SomeExpr &e, bool isAssumedSizeExtent) {
             assert(!isAssumedSizeExtent && "result cannot be assumed-size");
-            extents.emplace_back(lowerSpecExpr(e));
+            ++dimIdx;
+            if (e.Rank() > 0) {
+              // Rank-1 extent expression: evaluate once, then extract each
+              // element by dimension index.
+              if (!preEvaluatedExtent) {
+                preEvaluatedExtent = hlfir::Entity{
+                    fir::getBase(converter.genExprValue(e, stmtCtx))};
+              }
+              mlir::Value idx = builder.createIntegerConstant(
+                  loc, builder.getIndexType(), dimIdx);
+              mlir::Value elem = hlfir::loadElementAt(
+                  loc, builder, *preEvaluatedExtent, {idx});
+              mlir::Value convertExpr =
+                  builder.createConvert(loc, idxTy, elem);
+              extents.emplace_back(
+                  fir::factory::genMaxWithZero(builder, loc, convertExpr));
+            } else {
+              extents.emplace_back(lowerSpecExpr(e));
+            }
           });
+    }
     if (resultLengths.empty()) {
       caller.walkResultLengths(
           [&](const Fortran::lower::SomeExpr &e, bool isAssumedSizeExtent) {
