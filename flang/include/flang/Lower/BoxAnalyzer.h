@@ -389,7 +389,10 @@ public:
       llvm::SmallVector<int64_t> lbounds;
       llvm::SmallVector<int64_t> shapes;
       llvm::SmallVector<const Fortran::semantics::ShapeSpec *> bounds;
-      for (const Fortran::semantics::ShapeSpec &subs : getSymShape(sym)) {
+      const auto &symShape = getSymShape(sym);
+      int rank = symShape.Rank();
+      for (int dim = 0; dim < rank; ++dim) {
+        const Fortran::semantics::ShapeSpec &subs = symShape[dim];
         bounds.push_back(&subs);
         if (!isConstant)
           continue;

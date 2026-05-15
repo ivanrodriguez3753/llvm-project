@@ -257,7 +257,8 @@ public:
             symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
       int rank{object->shape().Rank()};
       if (dimension_ < rank) {
-        const semantics::ShapeSpec &shapeSpec{object->shape()[dimension_]};
+        const semantics::ShapeSpec &shapeSpec{
+            object->shape()[dimension_]};
         if (shapeSpec.lbound().isExplicit()) {
           if (const auto &lbound{shapeSpec.lbound().GetExplicit()};
               lbound && lbound->Rank() == 0) {
@@ -628,7 +629,8 @@ MaybeExtentExpr GetRawUpperBound(
   if (const auto *details{symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
     int rank{details->shape().Rank()};
     if (dimension < rank) {
-      const auto &bound{details->shape()[dimension].ubound().GetExplicit()};
+      const auto &bound{
+          details->shape()[dimension].ubound().GetExplicit()};
       if (bound && bound->Rank() == 0 &&
           (!invariantOnly || IsScopeInvariantExpr(*bound))) {
         return *bound;
@@ -684,7 +686,8 @@ static MaybeExtentExpr GetUBOUND(FoldingContext *context,
   if (const auto *details{symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
     int rank{details->shape().Rank()};
     if (dimension < rank) {
-      const semantics::ShapeSpec &shapeSpec{details->shape()[dimension]};
+      const semantics::ShapeSpec &shapeSpec{
+          details->shape()[dimension]};
       if (auto ubound{GetExplicitUBOUND(context, shapeSpec, invariantOnly)}) {
         return *ubound;
       } else if (semantics::IsAssumedSizeArray(symbol) &&

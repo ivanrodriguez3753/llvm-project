@@ -1847,6 +1847,27 @@ private:
     llvm_unreachable("unknown descriptor inquiry");
   }
 
+  hlfir::EntityWithAttributes
+  gen(const Fortran::evaluate::RankOneBoundElement &x) {
+    mlir::Location loc = getLoc();
+    auto &builder = getBuilder();
+    using ResTy = Fortran::evaluate::RankOneBoundElement::Result;
+    mlir::Type resultType =
+        getConverter().genType(ResTy::category, ResTy::kind);
+    // Evaluate the rank-1 base expression.
+    Fortran::lower::SomeExpr someExpr{Fortran::evaluate::AsGenericExpr(
+        Fortran::evaluate::Expr<Fortran::evaluate::SomeInteger>{
+            Fortran::common::Clone(x.base())})};
+    hlfir::Entity baseArray{Fortran::lower::convertExprToHLFIR(
+        loc, getConverter(), someExpr, getSymMap(), getStmtCtx())};
+    // Extract element at dimension (1-based index).
+    mlir::Value idx = builder.createIntegerConstant(
+        loc, builder.getIndexType(), x.dimension() + 1);
+    mlir::Value elem = hlfir::loadElementAt(loc, builder, baseArray, {idx});
+    return hlfir::EntityWithAttributes{
+        builder.createConvert(loc, resultType, elem)};
+  }
+
   /// Build nested if-then-else chain by walking the right-skewed
   /// ConditionalExpr tree. The assignValue callback generates and assigns
   /// each value to avoid evaluating non-taken branches.

@@ -978,12 +978,36 @@ void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
     arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
     return;
   }
-  for (std::int64_t i{0}; i < result->numDims; ++i) {
-    Bound lb{1};
-    if (result->lbound) {
-      lb = *result->lbound;
+  // For rank-1 bounds, emit N ShapeSpecs each wrapping a scalar
+  // RankOneBoundElement that extracts element [dim] from the rank-1
+  // expression.  This makes all downstream consumers see scalar bounds.
+  int numDims = static_cast<int>(result->numDims);
+  for (int dim = 0; dim < numDims; ++dim) {
+    // Upper bound
+    MaybeSubscriptIntExpr ubExpr;
+    if (auto &ubOrig = result->ubound.GetExplicit()) {
+      if (ubOrig->Rank() > 0) {
+        ubExpr = SubscriptIntExpr{evaluate::RankOneBoundElement{
+            common::Clone(*ubOrig), dim}};
+      } else {
+        ubExpr = common::Clone(*ubOrig);
+      }
     }
-    Bound ub{result->ubound};
+    // Lower bound
+    MaybeSubscriptIntExpr lbExpr;
+    if (result->lbound) {
+      if (auto &lbOrig = result->lbound->GetExplicit()) {
+        if (lbOrig->Rank() > 0) {
+          lbExpr = SubscriptIntExpr{evaluate::RankOneBoundElement{
+              common::Clone(*lbOrig), dim}};
+        } else {
+          lbExpr = common::Clone(*lbOrig);
+        }
+      }
+    }
+    Bound lb{lbExpr ? std::move(lbExpr)
+                    : MaybeSubscriptIntExpr{SubscriptIntExpr{1}}};
+    Bound ub{std::move(ubExpr)};
     arraySpec_.push_back(ShapeSpec::MakeExplicit(std::move(lb), std::move(ub)));
   }
 }

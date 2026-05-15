@@ -847,6 +847,12 @@ llvm::raw_ostream &DescriptorInquiry::AsFortran(llvm::raw_ostream &o) const {
   return o << ",kind=" << DescriptorInquiry::Result::kind << ")";
 }
 
+llvm::raw_ostream &RankOneBoundElement::AsFortran(
+    llvm::raw_ostream &o) const {
+  base_.value().AsFortran(o) << '(' << (dimension_ + 1) << ')';
+  return o;
+}
+
 llvm::raw_ostream &Assignment::AsFortran(llvm::raw_ostream &o) const {
   common::visit(
       common::visitors{
