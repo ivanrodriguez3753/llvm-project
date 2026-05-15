@@ -257,8 +257,7 @@ public:
             symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
       int rank{object->shape().Rank()};
       if (dimension_ < rank) {
-        const semantics::ShapeSpec &shapeSpec{
-            object->shape()[dimension_]};
+        const semantics::ShapeSpec &shapeSpec{object->shape()[dimension_]};
         if (shapeSpec.lbound().isExplicit()) {
           if (const auto &lbound{shapeSpec.lbound().GetExplicit()};
               lbound && lbound->Rank() == 0) {
@@ -307,20 +306,8 @@ public:
             } else {
               return *lbound;
             }
-          } else if (lbound && lbound->Rank() > 0) {
-            // Rank-1 bound expression (e.g. from SHAPE(x) or array-valued
-            // lower bound): cannot be decomposed to a per-dimension scalar
-            // here. For LBOUND intrinsic, return empty to prevent incorrect
-            // folding; Lower handles element extraction at runtime.
-            if constexpr (LBOUND_SEMANTICS) {
-              return Result{};
-            }
-            // For raw lower bound queries (LBOUND_SEMANTICS=false), fall
-            // through: the result type (ExtentExpr) is non-optional, and
-            // we cannot produce a correct per-dimension value here.
-            // Callers that reach this point already guard against
-            // non-scalar results (e.g. GetExtent returns nullopt for
-            // rank-1 bounds, causing ComputeUpperBound to return nullopt).
+          } else {
+            return Result{1};
           }
         }
         if (IsDescriptor(symbol)) {
@@ -629,8 +616,7 @@ MaybeExtentExpr GetRawUpperBound(
   if (const auto *details{symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
     int rank{details->shape().Rank()};
     if (dimension < rank) {
-      const auto &bound{
-          details->shape()[dimension].ubound().GetExplicit()};
+      const auto &bound{details->shape()[dimension].ubound().GetExplicit()};
       if (bound && bound->Rank() == 0 &&
           (!invariantOnly || IsScopeInvariantExpr(*bound))) {
         return *bound;
@@ -686,8 +672,7 @@ static MaybeExtentExpr GetUBOUND(FoldingContext *context,
   if (const auto *details{symbol.detailsIf<semantics::ObjectEntityDetails>()}) {
     int rank{details->shape().Rank()};
     if (dimension < rank) {
-      const semantics::ShapeSpec &shapeSpec{
-          details->shape()[dimension]};
+      const semantics::ShapeSpec &shapeSpec{details->shape()[dimension]};
       if (auto ubound{GetExplicitUBOUND(context, shapeSpec, invariantOnly)}) {
         return *ubound;
       } else if (semantics::IsAssumedSizeArray(symbol) &&

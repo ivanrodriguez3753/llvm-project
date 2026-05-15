@@ -426,13 +426,12 @@ Fortran::lower::genCallOpAndResult(
     if (!caller.callerAllocateResult())
       return {};
     mlir::Type type = caller.getResultStorageType();
-    if (mlir::isa<fir::SequenceType>(type)) {
+    if (mlir::isa<fir::SequenceType>(type))
       caller.walkResultExtents(
           [&](const Fortran::lower::SomeExpr &e, bool isAssumedSizeExtent) {
             assert(!isAssumedSizeExtent && "result cannot be assumed-size");
             extents.emplace_back(lowerSpecExpr(e));
           });
-    }
     if (resultLengths.empty()) {
       caller.walkResultLengths(
           [&](const Fortran::lower::SomeExpr &e, bool isAssumedSizeExtent) {

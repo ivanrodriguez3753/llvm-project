@@ -377,15 +377,11 @@ walkExtents(const Fortran::semantics::Symbol &symbol,
   if (const auto *objectDetails =
           symbol.detailsIf<Fortran::semantics::ObjectEntityDetails>())
     if (objectDetails->shape().IsExplicitShape() ||
-        Fortran::semantics::IsAssumedSizeArray(symbol)) {
-      const auto &shape = objectDetails->shape();
-      int rank = shape.Rank();
-      for (int dim = 0; dim < rank; ++dim) {
-        const Fortran::semantics::ShapeSpec &shapeSpec = shape[dim];
+        Fortran::semantics::IsAssumedSizeArray(symbol))
+      for (const Fortran::semantics::ShapeSpec &shapeSpec :
+           objectDetails->shape())
         visitor(Fortran::evaluate::AsGenericExpr(getExtentExpr(shapeSpec)),
                 /*assumedSize=*/shapeSpec.ubound().isStar());
-      }
-    }
 }
 
 void Fortran::lower::CallerInterface::walkResultExtents(

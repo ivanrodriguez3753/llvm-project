@@ -1738,11 +1738,11 @@ static void lowerExplicitLowerBounds(
       result.emplace_back(builder.createIntegerConstant(loc, idxTy, lb));
     return;
   }
-  for (const auto &spec : llvm::enumerate(box.dynamicBound())) {
-    if (auto low = spec.value()->lbound().GetExplicit()) {
+  for (const Fortran::semantics::ShapeSpec *spec : box.dynamicBound()) {
+    if (auto low = spec->lbound().GetExplicit()) {
       auto expr = Fortran::lower::SomeExpr{*low};
-      mlir::Value lb = builder.createConvert(loc, idxTy,
-          genScalarValue(converter, loc, expr, symMap, stmtCtx));
+      mlir::Value lb = builder.createConvert(
+          loc, idxTy, genScalarValue(converter, loc, expr, symMap, stmtCtx));
       result.emplace_back(lb);
     }
   }
@@ -1780,8 +1780,8 @@ lowerExplicitExtents(Fortran::lower::AbstractConverter &converter,
   for (const auto &spec : llvm::enumerate(box.dynamicBound())) {
     if (auto up = spec.value()->ubound().GetExplicit()) {
       auto expr = Fortran::lower::SomeExpr{*up};
-      mlir::Value ub = builder.createConvert(loc, idxTy,
-          genScalarValue(converter, loc, expr, symMap, stmtCtx));
+      mlir::Value ub = builder.createConvert(
+          loc, idxTy, genScalarValue(converter, loc, expr, symMap, stmtCtx));
       if (lowerBounds.empty())
         result.emplace_back(fir::factory::genMaxWithZero(builder, loc, ub));
       else
@@ -2371,7 +2371,7 @@ void Fortran::lower::mapSymbolAttributes(
              "lbound must be explicit with constant value 1");
       if (auto high = spec->ubound().GetExplicit()) {
         Fortran::lower::SomeExpr highEx{*high};
-        mlir::Value ub = genScalarValue(converter, loc, highEx, symMap, stmtCtx);
+        mlir::Value ub = genValue(highEx);
         ub = builder.createConvert(loc, idxTy, ub);
         shapes.emplace_back(fir::factory::genMaxWithZero(builder, loc, ub));
       } else if (spec->ubound().isColon()) {
@@ -2407,8 +2407,7 @@ void Fortran::lower::mapSymbolAttributes(
         extents.emplace_back(dimInfo.getResult(1));
         if (auto low = spec->lbound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*low};
-          mlir::Value lb = builder.createConvert(loc, idxTy,
-              genScalarValue(converter, loc, expr, symMap, stmtCtx));
+          mlir::Value lb = builder.createConvert(loc, idxTy, genValue(expr));
           lbounds.emplace_back(lb);
         } else {
           // Implicit lower bound is 1 (Fortran 2018 section 8.5.8.3 point 3.)
@@ -2417,8 +2416,7 @@ void Fortran::lower::mapSymbolAttributes(
       } else {
         if (auto low = spec->lbound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*low};
-          lb = builder.createConvert(loc, idxTy,
-              genScalarValue(converter, loc, expr, symMap, stmtCtx));
+          lb = builder.createConvert(loc, idxTy, genValue(expr));
         } else {
           TODO(loc, "support for assumed rank entities");
         }
@@ -2426,8 +2424,7 @@ void Fortran::lower::mapSymbolAttributes(
 
         if (auto high = spec->ubound().GetExplicit()) {
           auto expr = Fortran::lower::SomeExpr{*high};
-          ub = builder.createConvert(loc, idxTy,
-              genScalarValue(converter, loc, expr, symMap, stmtCtx));
+          ub = builder.createConvert(loc, idxTy, genValue(expr));
           extents.emplace_back(
               fir::factory::computeExtent(builder, loc, lb, ub));
         } else {
