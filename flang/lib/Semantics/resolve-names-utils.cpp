@@ -435,7 +435,15 @@ ArraySpecAnalyzer::checkExplicitShapeBoundsSpec(
 
 void ArraySpecAnalyzer::Analyze(const parser::ExplicitShapeBoundsSpec &x) {
   auto result{checkExplicitShapeBoundsSpec(x)};
+  // Every path that results in result being false emits an error. In the event
+  // that we bail early without emitting an error, we silently pass the fallback
+  // Bound{1} WITHOUT failing. This check ensures that if we failed, we emitted
+  // an error message. This way we can pass the 
+  //   CHECK(!arraySpec_.empty());
+  // in Analyze(ArraySpec). If we don't, it'll crash before getting to emit 
+  // the real (user) error messages. 
   if (!result) {
+    CHECK(context_.AnyFatalError());
     arraySpec_.push_back(ShapeSpec::MakeExplicit(Bound{1}));
     return;
   }
