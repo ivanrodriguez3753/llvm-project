@@ -976,18 +976,18 @@ void PutShapeSpec(llvm::raw_ostream &os, const ShapeSpec &x) {
   }
 }
 
-// Check whether any bound in an ArraySpec holds a rank-1 expression.
+// Check whether any bound in an ArraySpec holds a RankOneBoundElement,
+// indicating the shape came from a rank-1 integer array expression.
 bool HasRankOneBound(const ArraySpec &shape) {
-  for (const auto &spec : shape) {
-    if (auto lb{spec.lbound().GetExplicit()}) {
-      if (lb->Rank() > 0) {
-        return true;
-      }
+  const auto &first{shape.front()};
+  if (auto lb{first.lbound().GetExplicit()}) {
+    if (evaluate::UnwrapExpr<evaluate::RankOneBoundElement>(*lb)) {
+      return true;
     }
-    if (auto ub{spec.ubound().GetExplicit()}) {
-      if (ub->Rank() > 0) {
-        return true;
-      }
+  }
+  if (auto ub{first.ubound().GetExplicit()}) {
+    if (evaluate::UnwrapExpr<evaluate::RankOneBoundElement>(*ub)) {
+      return true;
     }
   }
   return false;
@@ -998,23 +998,28 @@ void PutShape(
   if (!shape.empty()) {
     os << open;
     if (HasRankOneBound(shape)) {
-      // Rank-1 bounds: all ShapeSpecs share the same rank-1 expression(s).
-      // Emit as a single ExplicitShapeBoundsSpec so the mod file round-trips
-      // through the parser correctly.
+      // Rank-1 bounds: all ShapeSpecs share the same rank-1 expression
+      // wrapped in RankOneBoundElement. Extract the base expression from the
+      // first element and emit it whole so the mod file round-trips through
+      // the parser as an ExplicitShapeBoundsSpec.
       const auto &first{shape.front()};
       if (!first.lbound().isColon()) {
         auto lb{first.lbound().GetExplicit()};
-        if (lb && lb->Rank() > 0) {
-          lb->AsFortran(os);
-        } else if (lb) {
+        if (auto *robe =
+                evaluate::UnwrapExpr<evaluate::RankOneBoundElement>(*lb)) {
+          robe->base().AsFortran(os);
+        } else {
           PutBound(os, first.lbound());
         }
       }
       os << ':';
       if (!first.ubound().isColon()) {
         auto ub{first.ubound().GetExplicit()};
-        if (ub) {
-          ub->AsFortran(os);
+        if (auto *robe =
+                evaluate::UnwrapExpr<evaluate::RankOneBoundElement>(*ub)) {
+          robe->base().AsFortran(os);
+        } else {
+          PutBound(os, first.ubound());
         }
       }
     } else {

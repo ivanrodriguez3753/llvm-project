@@ -849,7 +849,7 @@ llvm::raw_ostream &DescriptorInquiry::AsFortran(llvm::raw_ostream &o) const {
 
 llvm::raw_ostream &RankOneBoundElement::AsFortran(
     llvm::raw_ostream &o) const {
-  base_.value().AsFortran(o) << '(' << (dimension_ + 1) << ')';
+  llvm_unreachable();
   return o;
 }
 
