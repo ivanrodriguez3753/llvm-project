@@ -598,20 +598,29 @@ private:
   template <typename A>
   void AnalyzeAndNoteUses(
       const A &x, [[maybe_unused]] bool isDefinition = false) {
-    exprAnalyzer_.Analyze(x);
     if constexpr (parser::HasTypedExpr<A>::value) {
+      exprAnalyzer_.Analyze(x);
       if (x.typedExpr && x.typedExpr->v) {
         NoteUsedSymbols(context_, *x.typedExpr->v, isDefinition);
       }
     } else if constexpr (parser::HasTypedCall<A>::value) {
+      exprAnalyzer_.Analyze(x);
       if (x.typedCall) {
         context_.NoteUsedSymbols(
             evaluate::CollectUsedSymbolValues(context_, *x.typedCall));
       }
     } else if constexpr (parser::HasTypedAssignment<A>::value) {
+      exprAnalyzer_.Analyze(x);
       if (x.typedAssignment && x.typedAssignment->v) {
         context_.NoteUsedSymbols(
             evaluate::CollectUsedSymbolValues(context_, *x.typedAssignment->v));
+      }
+    } else {
+      // Wrapper nodes (Scalar/Integer/Logical/Constant/DefaultChar) carry no
+      // typedExpr, and Pre() halts traversal before the inner Expr; note the
+      // analyzed result directly so uses in bounds and conditions are counted.
+      if (auto analyzed{exprAnalyzer_.Analyze(x)}) {
+        NoteUsedSymbols(context_, *analyzed, isDefinition);
       }
     }
   }
