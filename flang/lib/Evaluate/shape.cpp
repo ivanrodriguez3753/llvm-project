@@ -264,7 +264,16 @@ public:
               lbound && lbound->Rank() == 0) {
             if constexpr (LBOUND_SEMANTICS) {
               bool ok{false};
-              auto lbValue{ToInt64(*lbound)};
+              // Fold first: an assumed-shape lower bound spelled as a
+              // rank-1 array/expression (F2023 AssumedShapeBoundsSpec) is
+              // stored unfolded, as a RankOneBoundElement per dimension, so
+              // that mod-file printing can still recover the whole base
+              // expression (see PutShape/HasRankOneBound in mod-file.cpp).
+              // Folding only here, for this query, lets a per-dimension
+              // constant value (e.g. from a PARAMETER array) be recognized
+              // without disturbing that unfolded representation.
+              auto lbValue{ToInt64(
+                  context_ ? Fold(*context_, ExtentExpr{*lbound}) : *lbound)};
               if (dimension_ == rank - 1 &&
                   semantics::IsAssumedSizeArray(symbol)) {
                 // last dimension of assumed-size dummy array: don't worry

@@ -411,10 +411,67 @@ ArraySpec ArraySpecAnalyzer::Analyze(const parser::CoarraySpec &x) {
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeBoundsSpec &x) {
-  context_.Say("Analyze overload for AssumedShapeBoundsSpec"_todo_en_US);
-  // prevent CHECK abort in Analyze(ArraySpec), otherwise it'll abort before
-  // printing error message
-  arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{1}));
+  // The lone explicit-bounds-expr gives the lower bounds of an assumed-shape
+  // array; its constant extent determines the rank (F2023).  Each dimension's
+  // lower bound is a scalar RankOneBoundElement extracting element [dim] from
+  // the rank-1 expression, so downstream consumers see scalar bounds.  A
+  // zero-size array yields rank 0, i.e. the entity is scalar.
+  const parser::IntExpr &lowerBound{x.v};
+  MaybeExpr expr{AnalyzeExpr(context_, lowerBound)};
+  // Analyzing the parser::Integer<> wrapper enforces the INTEGER type
+  // constraint (C885) and emits a diagnostic for a non-INTEGER bound.
+  if (!expr) {
+    CHECK(context_.AnyFatalError());
+    return;
+  }
+  if (expr->Rank() != 1) {
+    context_.Say(parser::FindSourceLocation(lowerBound),
+        "Integer array used as lower bounds in DECLARATION must be rank-1 "
+        "but is rank-%d"_err_en_US,
+        expr->Rank());
+    return;
+  }
+  auto folded{evaluate::Fold(context_.foldingContext(), std::move(*expr))};
+  // The parser::Integer<> constraint enforced above guarantees an INTEGER
+  // type, so unwrapping the folded result as an integer expression must
+  // succeed.
+  const auto *someInt{evaluate::UnwrapExpr<SomeIntExpr>(folded)};
+  CHECK(someInt);
+  auto asSI{evaluate::Fold(context_.foldingContext(),
+      evaluate::ConvertToType<evaluate::SubscriptInteger>(
+          common::Clone(*someInt)))};
+  auto extents{evaluate::GetConstantExtents(context_.foldingContext(), folded)};
+  if (!extents) {
+    context_.Say(parser::FindSourceLocation(lowerBound),
+        "Rank-1 integer array used as lower bounds in DECLARATION must "
+        "have constant size"_err_en_US);
+    return;
+  }
+  // Reject a rank above the maximum in signed 64-bit arithmetic before numDims
+  // is narrowed to int and used to size the ArraySpec.
+  std::int64_t numDims{(*extents)[0]};
+  if (numDims > common::maxRank) {
+    context_.Say(parser::FindSourceLocation(lowerBound),
+        "DECLARATION rank-1 integer array bound(s) imply rank %jd, which is "
+        "greater than the maximum supported rank %d"_err_en_US,
+        static_cast<std::intmax_t>(numDims), common::maxRank);
+    return;
+  }
+  if (numDims == 0) {
+    // A zero-size bounds array declares a scalar (rank 0); leave arraySpec_
+    // empty and record that the empty result is intentional.  The bounds are
+    // not part of the shape, but they remain a specification expression;
+    // stash it so declaration checking validates it once the scope is fully
+    // resolved (see ObjectEntityDetails::droppedBoundsToCheck()).
+    zeroRankExplicitBounds_ = true;
+    droppedBoundsToCheck_.push_back(
+        Bound{MaybeSubscriptIntExpr{std::move(asSI)}});
+    return;
+  }
+  for (int dim = 0; dim < static_cast<int>(numDims); ++dim) {
+    arraySpec_.push_back(ShapeSpec::MakeAssumedShape(Bound{SubscriptIntExpr{
+        evaluate::RankOneBoundElement{common::Clone(asSI), dim}}}));
+  }
 }
 
 void ArraySpecAnalyzer::Analyze(const parser::AssumedShapeSpec &x) {

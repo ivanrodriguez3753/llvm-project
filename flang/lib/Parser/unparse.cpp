@@ -597,8 +597,8 @@ public:
             },
             [&](const std::list<AssumedShapeSpec> &y) { Walk(y, ","); },
             [&](const AssumedShapeBoundsSpec &y) {
-              llvm_unreachable(
-                  "Unparse for AssumedShapeBoundsSpec should not be reached");
+              Walk(y.v);
+              Put(':');
             },
             [&](const DeferredShapeSpecList &y) { Walk(y); },
             [&](const AssumedSizeSpec &y) { Walk(y); },

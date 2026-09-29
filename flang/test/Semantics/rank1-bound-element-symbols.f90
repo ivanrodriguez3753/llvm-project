@@ -36,6 +36,16 @@ subroutine s3(x)
   b = 0.0
 end subroutine
 
+! Assumed-shape lower bounds: the rank-1 integer array gives one lower bound
+! per dimension, each a scalar RankOneBoundElement; the upper bounds stay
+! assumed (colon).
+subroutine s4(lbs, a)
+  integer, intent(in) :: lbs(3)
+  !SYMBOLS: a {{.*}}: ObjectEntity {{.*}}shape: __builtin_rank1_bound_element(__builtin_int(lbs,kind=8),dim=1):,__builtin_rank1_bound_element(__builtin_int(lbs,kind=8),dim=2):,__builtin_rank1_bound_element(__builtin_int(lbs,kind=8),dim=3):
+  real :: a(lbs:)
+  a = 0.0
+end subroutine
+
 ! -fdebug-unparse-with-symbols intentionally reproduces the original bound syntax 
 ! rather than the synthesized rank1BoundElement node; this confirms the construct 
 ! still round-trips through that action with its symbol annotations.
@@ -43,3 +53,5 @@ end subroutine
 !UNPARSE: integer, intent(in) :: n(3)
 !UNPARSE: !DEF: /s/a ObjectEntity REAL(4)
 !UNPARSE: real a(n)
+!UNPARSE: subroutine s4 (lbs, a)
+!UNPARSE: real a(lbs:)
